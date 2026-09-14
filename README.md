@@ -8,9 +8,9 @@ portfolio management, risk management and decision support.
 broker-specific safeguards before any order can be transmitted.** See
 `jlmacro.config.Settings.jlmacro_live_trading_enabled` and `src/jlmacro/execution/`.
 
-## Status: Phase 1
+## Status: Phase 1 + partial Phase 2
 
-This repository currently implements **Phase 1** of the platform build-out:
+**Phase 1** (complete):
 
 - Repository/project scaffolding for all future phases
 - PostgreSQL/TimescaleDB database architecture with Alembic migrations
@@ -24,6 +24,18 @@ This repository currently implements **Phase 1** of the platform build-out:
 - An append-only audit log
 - A test suite (pytest) covering config, models, data seeding and the API
 
+**Phase 2** (macro data adapters only so far - market-data providers and the
+data-quality-driven ingestion pipeline into the regime engine are still to come):
+
+- Real macro data adapters for **FRED** (US), **RBA** (AU) and **ABS** (AU) behind the
+  same `BaseDataProvider` interface the synthetic providers use
+- A data-quality validation module (missing observations, duplicates, stale values,
+  impossible values, outliers, revision mismatches)
+- Two macro ingestion paths in `jlmacro.data.loader`: one for providers that expose a
+  genuine vintage history (FRED, via ALFRED), one for providers that only expose
+  current values (RBA, ABS) with local diff-based revision detection
+- `scripts/ingest_real_macro_data.py` to run real ingestion
+
 See `docs/` and the phase list in the original platform specification for what comes
 next. Do not build later phases until this one is reviewed.
 
@@ -35,8 +47,8 @@ config/          Fund business rules (risk limits, asset universe, macro indicat
 src/jlmacro/
   api/           FastAPI app (read-only in Phase 1).
   config/        pydantic-settings (.env) + YAML config loader.
-  data/          Provider adapters (BaseDataProvider). Phase 1 ships synthetic
-                 providers only; real adapters (FRED, RBA, ABS, ...) land in Phase 2.
+  data/          Provider adapters (BaseDataProvider): synthetic (Phase 1) plus real
+                 FRED/RBA/ABS macro adapters and a data-quality module (Phase 2).
   database/      SQLAlchemy engine/session/declarative base.
   models/        ORM models: Instrument, MarketDataPoint, MacroDataPoint, AuditLogEntry,
                  Portfolio/Position/Trade. models/{macro,signals,ml,regime} hold future
@@ -109,7 +121,8 @@ streamlit run dashboards/app.py
 ```
 
 A `Makefile` wraps the common commands: `make install`, `make migrate`, `make seed`,
-`make api`, `make dashboard`, `make test`, `make lint`, `make format`, `make typecheck`.
+`make ingest-fred`, `make ingest-rba`, `make ingest-abs`, `make api`, `make dashboard`,
+`make test`, `make lint`, `make format`, `make typecheck`.
 
 ## Running tests
 
@@ -168,11 +181,64 @@ on it would let a future revision leak into a query for an earlier date. This is
 exactly the look-ahead bias the platform is designed to prevent, and it is unit-tested
 (`tests/unit/test_models.py::test_macro_data_point_revision_semantics`).
 
-## Known limitations (Phase 1)
+## Real data adapters (Phase 2)
 
-- All market/macro data is **synthetic** - realistic-looking but not connected to any
-  real economy or market. Real provider adapters (FRED, RBA, ABS, ECB, BoE, BoJ, World
-  Bank, IMF, a market data vendor) are Phase 2.
+Three real macro data adapters exist behind `BaseDataProvider`
+(`src/jlmacro/data/base.py`), alongside the Phase 1 synthetic ones:
+
+- **`FredProvider`** (`src/jlmacro/data/macro/fred.py`) - US Federal Reserve Economic
+  Data. Requires a free API key: get one at
+  https://fred.stlouisfed.org/docs/api/api_key.html and set `FRED_API_KEY` in `.env`.
+  Uses FRED's ALFRED vintage history (`realtime_start`/`realtime_end`), so it returns
+  genuine historical revisions, not just current values.
+- **`RBAProvider`** (`src/jlmacro/data/macro/rba.py`) - Reserve Bank of Australia
+  statistical-table CSVs. No API key required.
+- **`ABSProvider`** (`src/jlmacro/data/macro/abs.py`) - Australian Bureau of Statistics
+  Data API (SDMX-JSON). No API key required.
+
+Run real ingestion with:
+
+```bash
+python scripts/ingest_real_macro_data.py --source fred --countries US
+python scripts/ingest_real_macro_data.py --source rba  --countries AU
+python scripts/ingest_real_macro_data.py --source abs  --countries AU
+# or: make ingest-fred / make ingest-rba / make ingest-abs
+```
+
+Which (country, indicator_code) maps to which series is entirely config-driven -
+`config/macro_indicators.yaml`'s `provider_series_ids` section, never hard-coded in the
+adapters. **The RBA/ABS entries in that file are marked "VERIFY"**: this platform was
+built in a network-restricted sandbox that could not reach `rba.gov.au` or
+`api.data.abs.gov.au` (nor `api.stlouisfed.org`) to confirm the exact current
+table/series/dataflow codes live, so double-check each one against the live site before
+relying on it. The adapters' HTTP/parsing logic is unit-tested against fixtures modeled
+on each API's real documented response shape (FRED's ALFRED JSON, RBA's CSV table
+layout, ABS's SDMX-JSON), so that part is trustworthy independent of the exact codes.
+
+**FRED vs. RBA/ABS point-in-time handling differs, deliberately:** FRED's ALFRED API
+gives a true vintage history, so `FredProvider` records already carry a real
+`release_date`/`revision_date` and get inserted via
+`jlmacro.data.loader.ingest_macro_vintage_records` (shared with the synthetic
+provider). RBA and ABS only expose *current* values with no public vintage feed, so
+`RBAProvider`/`ABSProvider` deliberately leave `release_date`/`revision_date` as
+`None`, and `jlmacro.data.loader.ingest_snapshot_macro_data` stamps them at the moment
+of ingestion - creating a new revision row only when a value has actually changed since
+the last time it was fetched. That is the only point-in-time-honest choice when a
+source doesn't tell you when a value was first published: never claim to have known
+something on a date before the ingestion that actually observed it.
+
+Every ingestion path runs `jlmacro.data.quality.validate_macro_records` first and logs
+any issues (missing observations, duplicate vintages, stale/impossible values,
+outliers, revision mismatches); a batch containing an error-level issue is rejected
+rather than inserted.
+
+## Known limitations
+
+- Market-data providers (a real price vendor) and ECB/BoE/BoJ/World Bank/IMF macro
+  adapters are not yet built - only FRED/RBA/ABS macro adapters exist so far.
+- The RBA/ABS series/table/dataflow identifiers in `config/macro_indicators.yaml`
+  could not be verified against the live sites from this build environment (see "Real
+  data adapters" above) - verify before relying on them in production.
 - The API is read-only. There are no portfolio, risk, signal, or execution endpoints
   yet - those land from Phase 4 onward as their respective engines are built.
 - The dashboard is a minimal research view (price/macro browsers + system status), not
@@ -184,13 +250,14 @@ exactly the look-ahead bias the platform is designed to prevent, and it is unit-
   running every component (migrations, seeding, API, dashboard, full test suite)
   against an equivalent local PostgreSQL 16 instance; a Docker daemon was not available
   in the environment this was built in, so the full containerised stack itself should
-  be smoke-tested once you run this locally.
+  be smoke-tested once you run this locally. Likewise, the FRED/RBA/ABS adapters were
+  validated against realistic fixtures, not live calls (this environment's network
+  policy blocked all three hosts) - do one real run of each once you have internet
+  access, before depending on them.
 
-## Recommended Phase 2
+## Recommended Phase 2 (remaining) / Phase 3
 
-Real data ingestion: implement `FredProvider`, `RBAProvider`, `ABSProvider`, and a
-market-data provider behind the existing `BaseDataProvider` interface
-(`src/jlmacro/data/base.py`), each mapping its provider-specific schema onto the same
-`MarketDataPoint`/`MacroDataPoint` fields the synthetic providers already populate, plus
-basic data-quality validation (missing observations, duplicates, stale prices, outliers,
-revision mismatches) before Phase 3's regime engine consumes the data.
+Remaining Phase 2 work: a real market-data provider (price vendor) behind
+`BaseMarketDataProvider`, and optionally ECB/BoE/BoJ/World Bank/IMF macro adapters
+following the same pattern as FRED/RBA/ABS. Then Phase 3: the macro regime engine
+(growth/inflation/policy/financial-conditions scores) consuming this data.

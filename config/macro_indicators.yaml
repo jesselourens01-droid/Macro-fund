@@ -94,3 +94,59 @@ sources:
   - WORLD_BANK
   - IMF
   - SYNTHETIC   # Phase 1 placeholder source used until real adapters (Phase 2) are wired in
+
+# Maps our internal (country, indicator_code) pairs onto each real provider's own
+# series/table identifiers, so the adapters (src/jlmacro/data/macro/{fred,rba,abs}.py)
+# never hard-code a series ID - add/change a mapping here, no code changes needed.
+#
+# FRED IDs below are FRED's standard, stable series mnemonics (fred.stlouisfed.org).
+#
+# RBA/ABS entries marked "VERIFY" are the current table/series/dataflow identifiers as
+# best known at the time this was written; RBA and ABS occasionally renumber tables and
+# series codes, and this environment's network policy blocked live verification against
+# rba.gov.au / api.data.abs.gov.au while building this - confirm each one against the
+# live site before relying on it, and treat RBAProvider/ABSProvider's parsing logic
+# (tested against realistic fixtures) as the trustworthy part, these codes as the part
+# to double-check.
+provider_series_ids:
+  FRED:
+    US:
+      CPI_HEADLINE: CPIAUCSL
+      CPI_CORE: CPILFESL
+      PCE: PCEPI
+      PPI: PPIACO
+      RETAIL_SALES: RSAFS
+      INDUSTRIAL_PRODUCTION: INDPRO
+      GDP: GDP
+      CONSUMER_CONFIDENCE: UMCSENT
+      EMPLOYMENT: PAYEMS
+      WAGE_GROWTH: CES0500000003
+      POLICY_RATE: FEDFUNDS
+      YIELD_CURVE_SLOPE: T10Y2Y
+      CREDIT_SPREAD_IG: BAMLC0A0CM
+      CREDIT_SPREAD_HY: BAMLH0A0HYM2
+      EQUITY_VOL: VIXCLS
+      MONEY_SUPPLY: M2SL
+      BREAKEVEN_INFLATION: T10YIE
+
+  RBA:
+    AU:
+      # VERIFY: RBA Table F1 "Interest Rates" - cash rate target column.
+      POLICY_RATE:
+        csv_url: "https://www.rba.gov.au/statistics/tables/csv/f01d.csv"
+        series_id: "FIRMMCRTD"
+      # VERIFY: RBA Table G1 "Consumer Price Inflation" - headline CPI, y/y.
+      CPI_HEADLINE:
+        csv_url: "https://www.rba.gov.au/statistics/tables/csv/g01d.csv"
+        series_id: "GCPIAGYP"
+
+  ABS:
+    AU:
+      # VERIFY: ABS Data API dataflow for the Consumer Price Index.
+      CPI_HEADLINE:
+        dataflow: "CPI"
+        key: "1.10001.10.50.Q"
+      # VERIFY: ABS Data API dataflow for quarterly GDP growth.
+      GDP:
+        dataflow: "ANA_AGG"
+        key: "1.20.10.Q"

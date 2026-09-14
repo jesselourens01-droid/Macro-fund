@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     # override alongside broker-specific safeguards (see src/jlmacro/execution).
     jlmacro_live_trading_enabled: bool = False
 
+    # Real macro data provider credentials (Phase 2). None of these are required for
+    # Phase 1's synthetic data path. RBA and ABS do not require API keys.
+    fred_api_key: str | None = None
+
+    # Shared HTTP client behaviour for outbound provider calls (src/jlmacro/data/http.py).
+    jlmacro_http_timeout_seconds: float = 30.0
+
     @computed_field  # type: ignore[misc]
     @property
     def database_url(self) -> str:

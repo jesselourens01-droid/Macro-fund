@@ -1,7 +1,7 @@
-.PHONY: help venv install up down build logs migrate seed test lint format typecheck api dashboard shell psql clean
+.PHONY: help venv install up down build logs migrate seed ingest-fred ingest-rba ingest-abs test lint format typecheck api dashboard shell psql clean
 
 help:
-	@echo "Common targets: install up down build migrate seed test lint format typecheck api dashboard clean"
+	@echo "Common targets: install up down build migrate seed ingest-fred ingest-rba ingest-abs test lint format typecheck api dashboard clean"
 
 venv:
 	python3 -m venv .venv
@@ -27,6 +27,15 @@ migrate:
 
 seed:
 	python scripts/generate_synthetic_data.py
+
+ingest-fred:
+	python scripts/ingest_real_macro_data.py --source fred --countries US
+
+ingest-rba:
+	python scripts/ingest_real_macro_data.py --source rba --countries AU
+
+ingest-abs:
+	python scripts/ingest_real_macro_data.py --source abs --countries AU
 
 test:
 	pytest -v
