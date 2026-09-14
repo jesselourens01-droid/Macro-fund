@@ -4,8 +4,10 @@ Phase 1/2 exposes read-only endpoints over the seeded instrument universe and PI
 market/macro data; Phase 3 adds computed macro regime snapshots; Phase 4 adds the
 quantitative signal engine (trend/valuation/positioning/catalyst/composite score);
 Phase 5 adds portfolio construction (covariance, weighting, position sizing,
-exposures) - so the dashboard (and future integrations) have something real to
-consume. Risk/execution endpoints are added in later phases behind the same app.
+exposures); Phase 6 adds the risk engine (VaR/Expected Shortfall, hypothetical/
+historical stress testing, drawdown governor) - so the dashboard (and future
+integrations) have something real to consume. Execution endpoints are added in
+later phases behind the same app.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from jlmacro.api.routers import (
     market_data,
     portfolio,
     regime,
+    risk,
     signals,
 )
 from jlmacro.config import get_settings
@@ -41,6 +44,7 @@ app.include_router(macro_data.router)
 app.include_router(regime.router)
 app.include_router(signals.router)
 app.include_router(portfolio.router)
+app.include_router(risk.router)
 
 
 @app.get("/")

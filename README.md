@@ -8,7 +8,7 @@ portfolio management, risk management and decision support.
 broker-specific safeguards before any order can be transmitted.** See
 `jlmacro.config.Settings.jlmacro_live_trading_enabled` and `src/jlmacro/execution/`.
 
-## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1)
+## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1)
 
 **Phase 1** (complete):
 
@@ -94,8 +94,29 @@ supports them, honestly-documented proxies elsewhere; see "Signal engine" below)
 - `GET /portfolio/covariance`, `/portfolio/weights`, `/portfolio/sizing/{symbol}` and
   `POST /portfolio/exposures` API endpoints, and a "Portfolio" dashboard tab
 - None of this persists a position or enforces `config/risk_limits.yaml`'s
-  concentration/drawdown limits - it produces the numbers Phase 6's risk engine will
-  check those limits against, and Phase 8's trade lifecycle will eventually persist
+  concentration/drawdown limits - it produces the numbers Phase 6's risk engine
+  checks those limits against, and Phase 8's trade lifecycle will eventually persist
+
+**Phase 6** (risk engine, v1 - VaR/Expected Shortfall, stress testing, drawdown
+governor; see "Risk engine" below):
+
+- VaR/ES (`jlmacro.risk.var`): historical (empirical, today's weights replayed
+  against real PIT daily returns), parametric/Gaussian, and Monte Carlo (simulated
+  from the covariance matrix) - all three reported together, since no single method
+  is trusted alone
+- Stress testing (`...risk.stress`): hypothetical shocks from `config/scenarios.yaml`
+  mapped onto whichever instruments they honestly apply to (equity indices, a
+  duration-proxy rates shock, FX vs USD, oil, gold), with every unmapped shock
+  component explicitly reported rather than silently dropped; historical scenario
+  replay of today's weights against real point-in-time returns over a named
+  historical window
+- Drawdown governor (`...risk.drawdown`): `config/risk_limits.yaml`'s
+  `drawdown_governor` schedule, turned into an actual multiplier on a risk budget
+- `POST /risk/var`, `/risk/stress/hypothetical`, `/risk/stress/historical` and
+  `GET /risk/drawdown` API endpoints, and a "Risk" dashboard tab
+- This is the layer with actual veto authority the platform spec asks for over
+  Phase 5's proposed weights/sizes - though nothing here is wired to auto-cut a
+  position yet, since there is still no persisted position to cut (Phase 8)
 
 See `docs/` and the phase list in the original platform specification for what comes
 next. Do not build later phases until this one is reviewed.
@@ -117,8 +138,9 @@ src/jlmacro/
                  signal engine - trend/valuation/positioning/catalyst/composite
                  (Phase 4); models/ml holds the future ML research layer.
   portfolio/     Covariance, position sizing, weighting and exposures (Phase 5).
-  risk/, execution/, backtest/, attribution/, reporting/, compliance/
-                 Package placeholders for Phase 6+ - deliberately near-empty for now.
+  risk/          VaR/Expected Shortfall, stress testing, drawdown governor (Phase 6).
+  execution/, backtest/, attribution/, reporting/, compliance/
+                 Package placeholders for Phase 7+ - deliberately near-empty for now.
   utils/         Structured logging, ID generation, audit logging.
 dashboards/      Streamlit app (presentation layer only - no business logic).
 scripts/         Operational scripts (synthetic data generator).
@@ -443,10 +465,56 @@ curl -X POST "http://localhost:8000/portfolio/exposures" \
   come from," since a small, highly-correlated position can contribute disproportionately
   more risk than its weight alone would suggest).
 - None of this enforces `config/risk_limits.yaml`'s `concentration_limits`,
-  `soft_volatility_limit`/`hard_volatility_limit`, or the `drawdown_governor` schedule -
-  that enforcement is Phase 6's risk engine. A weight or size coming back from this
-  layer is a proposal, not an approved or executed trade; there is still no persisted
-  `Position`/`Trade` row driving any of it (Phase 8).
+  `soft_volatility_limit`/`hard_volatility_limit`, or the `drawdown_governor` schedule
+  itself - see "Risk engine" below for the layer that actually checks against them. A
+  weight or size coming back from this layer is a proposal, not an approved or
+  executed trade; there is still no persisted `Position`/`Trade` row driving any of it
+  (Phase 8).
+
+## Risk engine (Phase 6)
+
+```bash
+curl -X POST "http://localhost:8000/risk/var" -H "Content-Type: application/json" \
+  -d '{"weights": {"SPX": 0.3, "US10Y": -0.2}, "as_of": "2026-08-31", "nav": 10000000}'
+curl -X POST "http://localhost:8000/risk/stress/hypothetical" -H "Content-Type: application/json" \
+  -d '{"weights": {"SPX": 0.3}, "scenario_id": "EQUITIES_DOWN_20", "nav": 10000000}'
+curl -X POST "http://localhost:8000/risk/stress/historical" -H "Content-Type: application/json" \
+  -d '{"weights": {"SPX": 0.3}, "scenario_id": "GFC_2008", "nav": 10000000}'
+curl "http://localhost:8000/risk/drawdown?current_drawdown=-0.06&risk_budget=50000"
+```
+
+- **VaR/Expected Shortfall** (`jlmacro.risk.var`) is reported three ways, always
+  together rather than picking one: `historical_var` (today's weights replayed
+  against the actual point-in-time daily return history - no distributional
+  assumption, but only as good as the sample), `parametric_var` (Gaussian/delta-normal
+  from a single portfolio volatility - fast and analytic, but understates fat tails),
+  and `monte_carlo_var` (simulated from the full covariance matrix - captures actual
+  cross-asset correlation, same Gaussian-draw assumption as parametric for now). All
+  three use the standard sqrt(time) horizon scaling, which assumes iid daily returns.
+- **Stress testing** (`...risk.stress`) has two modes. `apply_hypothetical_scenario`
+  applies a named shock from `config/scenarios.yaml` to whichever instruments it maps
+  onto honestly: equity indices directly, rates via a duration-proxy
+  (`-tenor_years * bp/10000`, using tenor as a stand-in for real modified duration),
+  FX vs USD (direction depends on whether the pair quotes or is quoted in USD), oil
+  and gold. Shock components with no honest instrument-level mapping yet (a credit-
+  spread index, an equity-vol percentile, an aggregate "commodities" or "growth"
+  shock) are returned in `unmapped_shock_keys`, never silently dropped or guessed at.
+  `apply_historical_scenario` replays today's weights against each instrument's real
+  point-in-time return over a named historical window (e.g. 2008-09-01 to
+  2009-03-01) - the mechanism is real, but it runs on this platform's synthetic price
+  history (see "Known limitations"), so results are illustrative of the *method*
+  until real historical prices are wired in; any symbol missing data in that window
+  is reported in `missing_symbols`, not silently zeroed.
+- **Drawdown governor** (`...risk.drawdown`) turns `config/risk_limits.yaml`'s
+  `drawdown_governor.levels` schedule into `risk_budget_fraction_for_drawdown` (the
+  deepest breached threshold wins) and `is_defensive_mode` (past
+  `defensive_mode_threshold`). There is no persisted NAV history yet (Phase 9), so
+  this takes a `current_drawdown` figure as an explicit input rather than computing
+  one - callers supply whatever drawdown they have; Phase 9 will supply a real one.
+- This is the platform spec's risk engine with "final authority over position size" -
+  but that authority isn't wired to automatically cut anything yet, since there is
+  still no persisted position to cut (Phase 8) or NAV series to compute a real
+  drawdown from (Phase 9). Today it's numbers on demand, not an enforced gate.
 
 ## Known limitations
 
@@ -456,15 +524,29 @@ curl -X POST "http://localhost:8000/portfolio/exposures" \
   against live data end to end (see "Real data adapters" above for which are
   documentation-verified vs. best-guess) - do a live run before relying on them.
   ABS's GDP indicator has no mapping at all yet (data key not confirmed).
-- The API has portfolio-construction endpoints (Phase 5) but no risk-limit enforcement,
-  execution endpoints, or persisted positions yet, and nothing here can place an
-  order - those land from Phase 6 onward as their respective engines are built.
-- The dashboard has price/macro/regime/signals/portfolio browsers + system status, not
-  the full 8-page CIO dashboard described in the platform spec - that requires the
-  risk/attribution layers built in later phases.
+- The API has portfolio-construction (Phase 5) and risk (Phase 6) endpoints, but no
+  execution endpoints or persisted positions yet, and nothing here can place an
+  order - those land from Phase 7 onward as their respective engines are built.
+- The dashboard has price/macro/regime/signals/portfolio/risk browsers + system
+  status, not the full 8-page CIO dashboard described in the platform spec - that
+  requires the attribution/reporting layers built in later phases.
 - `Portfolio`/`Position`/`Trade` tables exist (for schema/migration stability) but are
-  not yet populated by any business logic - Phase 5's weights/sizes are computed
-  on demand and returned, never persisted.
+  not yet populated by any business logic - Phase 5/6's weights/sizes/risk numbers
+  are computed on demand and returned, never persisted.
+- The risk engine (Phase 6) computes numbers on demand but doesn't automatically cut
+  anything - there is still no persisted position to cut (Phase 8) and no NAV history
+  to compute a real drawdown from (Phase 9); `GET /risk/drawdown` takes a
+  `current_drawdown` you supply, not one it derives itself.
+- `apply_hypothetical_scenario` (`jlmacro.risk.stress`) only maps 6 of the ~9 distinct
+  shock keys used across `config/scenarios.yaml`'s hypothetical scenarios onto actual
+  instruments (equity_indices, rates_bp, usd_index, audusd, oil, gold) - the rest
+  (china_growth, an aggregate "commodities" shock, inflation, growth, credit_spread_bp,
+  equity_vol_pctile, funding_stress_pctile) have no honest instrument-level mapping in
+  this universe yet and are reported via `unmapped_shock_keys`, not applied. Every
+  historical scenario in that file predates this platform's synthetic price history
+  (2024+), so `apply_historical_scenario` will report every symbol as missing until
+  real historical prices are wired in - the mechanism is real, the data behind it
+  isn't yet.
 - `equal_risk_contribution_weights` is solved with `cvxpy`'s CLARABEL backend (the
   ECOS backend some cvxpy examples default to isn't installed here); if you add solver
   backends, re-verify the fallback-to-inverse-volatility path in
@@ -498,8 +580,11 @@ immediately benefit from broader real (non-synthetic) coverage across the 6 coun
 and a real market-data vendor would very likely also carry real earnings/fundamentals
 data that could replace the signal engine's equity valuation proxy.
 
-Phase 6 next: the risk engine (historical/parametric/Monte Carlo VaR, Expected
-Shortfall, hypothetical scenario stress testing via `config/scenarios.yaml`, and the
-drawdown governor schedule already sitting unenforced in `config/risk_limits.yaml`) -
-the layer with actual authority to cut Phase 5's proposed sizes down, which neither
-the signal engine's `suggested_risk_units` nor Phase 5's weights/sizes are.
+Phase 7 next: the backtesting engine, walk-forward validation and Monte Carlo
+simulation - putting the signal/portfolio/risk engines built so far through their
+paces against history, before Phase 8 gives them anything real to act on. Widening
+`jlmacro.risk.stress`'s hypothetical-shock mapping (a credit-spread/CDS proxy, an
+equity-vol-percentile proxy) and sourcing real historical prices so
+`apply_historical_scenario` can actually replay 2008/2020/etc. would also directly
+improve Phase 6, whenever a real market-data vendor is wired in (still Phase 2's
+remaining item, below).

@@ -48,6 +48,14 @@ from jlmacro.reporting.queries import (
     regime_matrix,
     system_status,
 )
+from jlmacro.risk.drawdown import (
+    apply_drawdown_governor,
+    drawdown_governor_config,
+    is_defensive_mode,
+    risk_budget_fraction_for_drawdown,
+)
+from jlmacro.risk.stress import apply_historical_scenario, apply_hypothetical_scenario
+from jlmacro.risk.var import compute_all_var_methods
 
 st.set_page_config(page_title="JL Global Macro Platform", layout="wide")
 
@@ -76,8 +84,8 @@ if instruments_df.empty:
     )
     st.stop()
 
-tab_prices, tab_macro, tab_regime, tab_signals, tab_portfolio, tab_universe = st.tabs(
-    ["Prices", "Macro Indicators", "Macro Regime", "Signals", "Portfolio", "Asset Universe"]
+tab_prices, tab_macro, tab_regime, tab_signals, tab_portfolio, tab_risk, tab_universe = st.tabs(
+    ["Prices", "Macro Indicators", "Macro Regime", "Signals", "Portfolio", "Risk", "Asset Universe"]
 )
 
 with tab_prices:
@@ -563,6 +571,132 @@ with tab_portfolio:
         )
         r3.metric("Notional", f"{size_result.notional:,.0f}")
         r4.metric("Price", f"{size_result.price:,.4f}" if size_result.price else "n/a")
+
+with tab_risk:
+    st.subheader("Risk engine")
+    st.caption(
+        "VaR/Expected Shortfall, stress testing and the drawdown governor - the layer "
+        "with actual authority over risk. Uses the same instruments/weights selected "
+        "in the Portfolio tab above; nothing here is persisted or auto-enforced yet "
+        "(there is no Position/Trade table until Phase 8)."
+    )
+
+    if "scaled" not in globals() or len(portfolio_symbols) < 2:
+        st.info(
+            "Select at least two instruments (and a valid target volatility) in the "
+            "Portfolio tab above first."
+        )
+    else:
+        risk_nav = st.number_input(
+            "NAV", min_value=0.0, value=10_000_000.0, step=100_000.0, key="risk_nav"
+        )
+
+        with session_scope() as session:
+            var_results = compute_all_var_methods(
+                session, portfolio_symbols, scaled.weights, nav=risk_nav, as_of=portfolio_as_of
+            )
+
+        var_df = pd.DataFrame(
+            {
+                method: {
+                    "VaR %": r.var_pct,
+                    "ES %": r.es_pct,
+                    "VaR amount": r.var_amount,
+                    "ES amount": r.es_amount,
+                }
+                for method, r in var_results.items()
+            }
+        ).T
+        any_result = next(iter(var_results.values()))
+        st.caption(
+            f"{any_result.horizon_days}-day VaR/ES at {any_result.confidence:.0%} confidence"
+        )
+
+        vcol1, vcol2 = st.columns(2)
+        with vcol1:
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=var_df.index, y=var_df["VaR %"], name="VaR"))
+            fig.add_trace(go.Bar(x=var_df.index, y=var_df["ES %"], name="Expected Shortfall"))
+            fig.update_layout(title="VaR / ES by method (fraction of NAV)", height=360)
+            st.plotly_chart(fig, width="stretch")
+        with vcol2:
+            st.dataframe(
+                var_df.style.format(
+                    {
+                        "VaR %": "{:.2%}",
+                        "ES %": "{:.2%}",
+                        "VaR amount": "{:,.0f}",
+                        "ES amount": "{:,.0f}",
+                    }
+                ),
+                width="stretch",
+            )
+
+        st.divider()
+        st.subheader("Stress testing")
+        scenario_config = load_yaml_config("scenarios")
+        hypothetical_ids = [s["id"] for s in scenario_config["hypothetical_scenarios"]]
+        historical_ids = [s["id"] for s in scenario_config["historical_scenarios"]]
+
+        scol1, scol2 = st.columns(2)
+        with scol1:
+            st.caption("Hypothetical shock")
+            hyp_id = st.selectbox("Scenario", hypothetical_ids, key="risk_hyp_scenario")
+            with session_scope() as session:
+                hyp_result = apply_hypothetical_scenario(
+                    session, scaled.weights, hyp_id, nav=risk_nav
+                )
+            st.metric("P&L", f"{hyp_result.pnl_amount:,.0f}", f"{hyp_result.pnl_pct:+.2%}")
+            if hyp_result.unmapped_shock_keys:
+                st.caption(
+                    "Not reflected above (no direct mapping onto this instrument "
+                    f"universe yet): {', '.join(hyp_result.unmapped_shock_keys)}"
+                )
+
+        with scol2:
+            st.caption("Historical replay")
+            hist_id = st.selectbox("Scenario", historical_ids, key="risk_hist_scenario")
+            with session_scope() as session:
+                hist_result = apply_historical_scenario(
+                    session, scaled.weights, hist_id, nav=risk_nav
+                )
+            st.metric("P&L", f"{hist_result.pnl_amount:,.0f}", f"{hist_result.pnl_pct:+.2%}")
+            if hist_result.missing_symbols:
+                st.caption(
+                    "No point-in-time price history in this window for: "
+                    f"{', '.join(hist_result.missing_symbols)} - this platform only has "
+                    "synthetic price history so far, not real historical prices."
+                )
+
+        st.divider()
+        st.subheader("Drawdown governor")
+        st.caption(
+            "config/risk_limits.yaml's drawdown_governor schedule: the fraction of the "
+            "normal risk budget retained at a given drawdown from the fund's high-water "
+            "mark. There is no persisted NAV history yet (Phase 9), so this reads a "
+            "hypothetical current drawdown you set below."
+        )
+        governor_config = drawdown_governor_config()
+        current_drawdown = st.slider(
+            "Current drawdown vs high-water mark",
+            min_value=-0.25,
+            max_value=0.0,
+            value=-0.05,
+            step=0.005,
+            format="%.3f",
+            key="risk_current_drawdown",
+        )
+        fraction = risk_budget_fraction_for_drawdown(current_drawdown, config=governor_config)
+        defensive = is_defensive_mode(current_drawdown, config=governor_config)
+
+        dcol1, dcol2, dcol3 = st.columns(3)
+        dcol1.metric("Risk budget retained", f"{fraction:.0%}")
+        dcol2.metric("Defensive mode", "YES" if defensive else "no")
+        if "size_result" in globals() and size_result.risk_budget:
+            governed_budget = apply_drawdown_governor(
+                size_result.risk_budget, current_drawdown, config=governor_config
+            )
+            dcol3.metric("Governed risk budget (from Sizing above)", f"{governed_budget:,.0f}")
 
 with tab_universe:
     st.subheader("Configured asset universe")

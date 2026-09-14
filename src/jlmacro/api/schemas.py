@@ -144,6 +144,60 @@ class ExposureOut(BaseModel):
     portfolio_volatility: float
 
 
+class VaRRequest(BaseModel):
+    weights: dict[str, float]
+    as_of: dt.date
+    nav: float
+    confidence: float | None = None
+    horizon_days: int | None = None
+
+
+class VaROut(BaseModel):
+    symbols: list[str]
+    as_of: dt.date
+    confidence: float
+    horizon_days: int
+    methods: dict[str, dict[str, float]]  # method -> {var_pct, var_amount, es_pct, es_amount}
+
+
+class HypotheticalStressRequest(BaseModel):
+    weights: dict[str, float]
+    scenario_id: str
+    nav: float
+
+
+class HypotheticalStressOut(BaseModel):
+    scenario_id: str
+    pnl_pct: float
+    pnl_amount: float
+    instrument_shocks: dict[str, float]
+    unmapped_shock_keys: list[str]
+
+
+class HistoricalStressRequest(BaseModel):
+    weights: dict[str, float]
+    scenario_id: str
+    nav: float
+
+
+class HistoricalStressOut(BaseModel):
+    scenario_id: str
+    start_date: dt.date
+    end_date: dt.date
+    pnl_pct: float
+    pnl_amount: float
+    instrument_returns: dict[str, float]
+    missing_symbols: list[str]
+
+
+class DrawdownGovernorOut(BaseModel):
+    current_drawdown: float
+    risk_budget_fraction: float
+    defensive_mode: bool
+    original_risk_budget: float | None
+    governed_risk_budget: float | None
+
+
 class HealthOut(BaseModel):
     status: str
     environment: str
