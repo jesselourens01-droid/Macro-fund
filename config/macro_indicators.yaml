@@ -1,0 +1,96 @@
+# Definitions of macro indicators tracked per country. Used by data adapters (Phase 2)
+# and the regime engine (Phase 3) to know what to fetch/compute and how to categorise it.
+
+countries:
+  - US
+  - EA
+  - GB
+  - JP
+  - AU
+  - CN
+
+indicators:
+  growth:
+    - code: PMI_MFG
+      name: "Manufacturing PMI"
+      frequency: monthly
+    - code: PMI_SERVICES
+      name: "Services PMI"
+      frequency: monthly
+    - code: INDUSTRIAL_PRODUCTION
+      name: "Industrial Production"
+      frequency: monthly
+    - code: RETAIL_SALES
+      name: "Retail Sales"
+      frequency: monthly
+    - code: GDP
+      name: "Gross Domestic Product"
+      frequency: quarterly
+    - code: CONSUMER_CONFIDENCE
+      name: "Consumer Confidence"
+      frequency: monthly
+    - code: EMPLOYMENT
+      name: "Employment / Payrolls"
+      frequency: monthly
+
+  inflation:
+    - code: CPI_HEADLINE
+      name: "Headline CPI"
+      frequency: monthly
+    - code: CPI_CORE
+      name: "Core CPI"
+      frequency: monthly
+    - code: PCE
+      name: "Personal Consumption Expenditures Price Index"
+      frequency: monthly
+      countries: [US]
+    - code: WAGE_GROWTH
+      name: "Wage Growth"
+      frequency: quarterly
+    - code: PPI
+      name: "Producer Price Index"
+      frequency: monthly
+    - code: BREAKEVEN_INFLATION
+      name: "Breakeven Inflation Rate"
+      frequency: daily
+
+  monetary_policy:
+    - code: POLICY_RATE
+      name: "Central Bank Policy Rate"
+      frequency: daily
+    - code: YIELD_CURVE_SLOPE
+      name: "2s10s Yield Curve Slope"
+      frequency: daily
+    - code: RATE_EXPECTATIONS
+      name: "Rate Expectations (OIS-implied)"
+      frequency: daily
+
+  financial_conditions:
+    - code: CREDIT_SPREAD_IG
+      name: "Investment Grade Credit Spread"
+      frequency: daily
+    - code: CREDIT_SPREAD_HY
+      name: "High Yield Credit Spread"
+      frequency: daily
+    - code: EQUITY_VOL
+      name: "Equity Implied Volatility"
+      frequency: daily
+    - code: BOND_VOL
+      name: "Bond Implied Volatility (MOVE-style)"
+      frequency: daily
+    - code: MONEY_SUPPLY
+      name: "Broad Money Supply Growth"
+      frequency: monthly
+
+sources:
+  - FRED
+  - US_TREASURY
+  - FEDERAL_RESERVE
+  - RBA
+  - ABS
+  - ECB
+  - BOE
+  - BOJ
+  - WORLD_BANK
+  - IMF
+  - SYNTHETIC   # Phase 1 placeholder source used until real adapters (Phase 2) are wired in

@@ -1,0 +1,23 @@
+# General platform settings. Environment-specific secrets live in .env, not here.
+
+fund:
+  name: "JL Global Macro Fund"
+  base_currency: "AUD"
+  inception_date: "2026-01-01"
+  jurisdiction: "Australia (Wholesale)"
+
+environment: development
+
+execution:
+  live_trading_enabled: false   # Hard-coded safety default. Must be explicitly overridden per broker with PM approval.
+  default_broker: "paper"
+
+scheduling:
+  timezone: "Australia/Sydney"
+
+logging:
+  level: INFO
+  format: json
+
+dashboard:
+  refresh_seconds: 30

@@ -1,0 +1,43 @@
+# Fund-level risk rules. The risk engine (src/jlmacro/risk) reads these at runtime.
+# Populated now for Phase 1 wiring; enforced starting Phase 5/6.
+
+target_volatility: 0.09
+soft_volatility_limit: 0.11
+hard_volatility_limit: 0.13
+
+position_risk:
+  normal_min: 0.0025
+  normal_max: 0.0050
+  high_conviction_max: 0.0075
+
+concentration_limits:
+  max_theme_risk: 0.02
+  max_country_risk: 0.03
+  max_asset_class_risk: 0.04
+
+var:
+  confidence: 0.99
+  horizons_days: [1, 5, 10]
+
+drawdown_governor:
+  # drawdown threshold (negative, fraction of NAV) -> fraction of risk budget retained
+  levels:
+    - {threshold: -0.03, risk_budget_fraction: 1.00}
+    - {threshold: -0.05, risk_budget_fraction: 0.90}
+    - {threshold: -0.075, risk_budget_fraction: 0.70}
+    - {threshold: -0.10, risk_budget_fraction: 0.50}
+  defensive_mode_threshold: -0.10
+
+investment_score_thresholds:
+  no_position_max: 55
+  watchlist_max: 65
+  half_unit_max: 75
+  full_unit_max: 85
+  # 85+ => max 1.5 risk units, subject to the above hard limits
+
+signal_weights:
+  macro: 0.30
+  valuation: 0.20
+  trend: 0.20
+  positioning: 0.15
+  catalyst: 0.15

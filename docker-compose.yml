@@ -1,0 +1,74 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: jlmacro_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jlmacro}
+      POSTGRES_USER: ${POSTGRES_USER:-jlmacro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_dev_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - jlmacro_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jlmacro} -d ${POSTGRES_DB:-jlmacro}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: .
+    container_name: jlmacro_migrate
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    build: .
+    container_name: jlmacro_api
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: ["uvicorn", "jlmacro.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+
+  dashboard:
+    build: .
+    container_name: jlmacro_dashboard
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      JLMACRO_API_BASE_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: ["streamlit", "run", "dashboards/app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    volumes:
+      - ./src:/app/src
+      - ./dashboards:/app/dashboards
+      - ./config:/app/config
+
+volumes:
+  jlmacro_pgdata:

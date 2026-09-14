@@ -1,0 +1,81 @@
+# Stress-test scenario definitions (used by src/jlmacro/risk stress engine, Phase 6+).
+
+historical_scenarios:
+  - id: GFC_2008
+    name: "2008 Global Financial Crisis"
+    start_date: "2008-09-01"
+    end_date: "2009-03-01"
+  - id: EURO_CRISIS_2011
+    name: "2011 Euro Crisis"
+    start_date: "2011-07-01"
+    end_date: "2011-12-01"
+  - id: TAPER_TANTRUM_2013
+    name: "2013 Taper Tantrum"
+    start_date: "2013-05-01"
+    end_date: "2013-09-01"
+  - id: CHINA_SHOCK_2015
+    name: "2015 China Shock"
+    start_date: "2015-06-01"
+    end_date: "2015-09-01"
+  - id: VOL_SHOCK_2018
+    name: "2018 Volatility Shock (Volmageddon)"
+    start_date: "2018-01-01"
+    end_date: "2018-03-01"
+  - id: COVID_2020
+    name: "2020 COVID Crash"
+    start_date: "2020-02-01"
+    end_date: "2020-04-01"
+  - id: INFLATION_SHOCK_2022
+    name: "2022 Inflation / Rates Shock"
+    start_date: "2022-01-01"
+    end_date: "2022-10-01"
+  - id: BANKING_STRESS_2023
+    name: "2023 Regional Banking Stress"
+    start_date: "2023-03-01"
+    end_date: "2023-04-01"
+
+hypothetical_scenarios:
+  - id: EQUITIES_DOWN_10
+    shocks: {equity_indices: -0.10}
+  - id: EQUITIES_DOWN_20
+    shocks: {equity_indices: -0.20}
+  - id: EQUITIES_DOWN_30
+    shocks: {equity_indices: -0.30}
+  - id: RATES_UP_100BP
+    shocks: {rates_bp: 100}
+  - id: RATES_UP_200BP
+    shocks: {rates_bp: 200}
+  - id: RATES_DOWN_100BP
+    shocks: {rates_bp: -100}
+  - id: RATES_DOWN_200BP
+    shocks: {rates_bp: -200}
+  - id: USD_UP_10
+    shocks: {usd_index: 0.10}
+  - id: USD_UP_20
+    shocks: {usd_index: 0.20}
+  - id: USD_DOWN_10
+    shocks: {usd_index: -0.10}
+  - id: AUD_UP_15
+    shocks: {audusd: 0.15}
+  - id: AUD_DOWN_20
+    shocks: {audusd: -0.20}
+  - id: OIL_UP_40
+    shocks: {oil: 0.40}
+  - id: OIL_DOWN_40
+    shocks: {oil: -0.40}
+  - id: GOLD_UP_20
+    shocks: {gold: 0.20}
+  - id: GOLD_DOWN_20
+    shocks: {gold: -0.20}
+  - id: VOLATILITY_SHOCK
+    shocks: {equity_vol_pctile: 95}
+  - id: CREDIT_SPREAD_SHOCK
+    shocks: {credit_spread_bp: 150}
+  - id: CHINA_HARD_LANDING
+    shocks: {china_growth: -0.04, commodities: -0.20, aud: -0.10}
+  - id: GLOBAL_STAGFLATION
+    shocks: {inflation: 0.03, growth: -0.02, rates_bp: 150}
+  - id: SEVERE_RECESSION
+    shocks: {equity_indices: -0.35, credit_spread_bp: 300, rates_bp: -150}
+  - id: LIQUIDITY_CRISIS
+    shocks: {equity_indices: -0.15, credit_spread_bp: 200, funding_stress_pctile: 99}

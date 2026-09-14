@@ -1,0 +1,164 @@
+# Configurable asset universe. Instruments are seeded into the database from this file
+# (see scripts/generate_synthetic_data.py) rather than hard-coded in application logic.
+
+equity_indices:
+  - symbol: SPX
+    name: "S&P 500"
+    country: US
+    currency: USD
+    calendar: NYSE
+  - symbol: NDX
+    name: "NASDAQ 100"
+    country: US
+    currency: USD
+    calendar: NYSE
+  - symbol: RTY
+    name: "Russell 2000"
+    country: US
+    currency: USD
+    calendar: NYSE
+  - symbol: SX5E
+    name: "Euro Stoxx 50"
+    country: EA
+    currency: EUR
+    calendar: EUREX
+  - symbol: UKX
+    name: "FTSE 100"
+    country: GB
+    currency: GBP
+    calendar: LSE
+  - symbol: DAX
+    name: "DAX"
+    country: DE
+    currency: EUR
+    calendar: EUREX
+  - symbol: NKY
+    name: "Nikkei 225"
+    country: JP
+    currency: JPY
+    calendar: JPX
+  - symbol: TPX
+    name: "TOPIX"
+    country: JP
+    currency: JPY
+    calendar: JPX
+  - symbol: HSI
+    name: "Hang Seng"
+    country: HK
+    currency: HKD
+    calendar: HKEX
+  - symbol: AS51
+    name: "ASX 200"
+    country: AU
+    currency: AUD
+    calendar: ASX
+
+rates:
+  - symbol: US02Y
+    name: "US 2Y Treasury"
+    country: US
+    currency: USD
+    tenor_years: 2
+  - symbol: US05Y
+    name: "US 5Y Treasury"
+    country: US
+    currency: USD
+    tenor_years: 5
+  - symbol: US10Y
+    name: "US 10Y Treasury"
+    country: US
+    currency: USD
+    tenor_years: 10
+  - symbol: US30Y
+    name: "US 30Y Treasury"
+    country: US
+    currency: USD
+    tenor_years: 30
+  - symbol: DE10Y
+    name: "German Bund 10Y"
+    country: DE
+    currency: EUR
+    tenor_years: 10
+  - symbol: UK10Y
+    name: "UK Gilt 10Y"
+    country: GB
+    currency: GBP
+    tenor_years: 10
+  - symbol: JP10Y
+    name: "JGB 10Y"
+    country: JP
+    currency: JPY
+    tenor_years: 10
+  - symbol: AU10Y
+    name: "ACGB 10Y"
+    country: AU
+    currency: AUD
+    tenor_years: 10
+
+fx:
+  - symbol: EURUSD
+    name: "Euro / US Dollar"
+    base_currency: EUR
+    quote_currency: USD
+  - symbol: GBPUSD
+    name: "British Pound / US Dollar"
+    base_currency: GBP
+    quote_currency: USD
+  - symbol: USDJPY
+    name: "US Dollar / Japanese Yen"
+    base_currency: USD
+    quote_currency: JPY
+  - symbol: AUDUSD
+    name: "Australian Dollar / US Dollar"
+    base_currency: AUD
+    quote_currency: USD
+  - symbol: USDCAD
+    name: "US Dollar / Canadian Dollar"
+    base_currency: USD
+    quote_currency: CAD
+  - symbol: NZDUSD
+    name: "New Zealand Dollar / US Dollar"
+    base_currency: NZD
+    quote_currency: USD
+  - symbol: USDCHF
+    name: "US Dollar / Swiss Franc"
+    base_currency: USD
+    quote_currency: CHF
+  - symbol: EURJPY
+    name: "Euro / Japanese Yen"
+    base_currency: EUR
+    quote_currency: JPY
+  - symbol: AUDJPY
+    name: "Australian Dollar / Japanese Yen"
+    base_currency: AUD
+    quote_currency: JPY
+  - symbol: EURGBP
+    name: "Euro / British Pound"
+    base_currency: EUR
+    quote_currency: GBP
+
+commodities:
+  - symbol: XAU
+    name: "Gold"
+    currency: USD
+    unit: "troy oz"
+  - symbol: XAG
+    name: "Silver"
+    currency: USD
+    unit: "troy oz"
+  - symbol: WTI
+    name: "WTI Crude Oil"
+    currency: USD
+    unit: "barrel"
+  - symbol: BRENT
+    name: "Brent Crude Oil"
+    currency: USD
+    unit: "barrel"
+  - symbol: HG
+    name: "Copper"
+    currency: USD
+    unit: "lb"
+  - symbol: NG
+    name: "Natural Gas"
+    currency: USD
+    unit: "mmBtu"
