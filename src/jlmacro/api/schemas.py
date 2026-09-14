@@ -8,7 +8,14 @@ import datetime as dt
 
 from pydantic import BaseModel, ConfigDict
 
-from jlmacro.models.enums import AssetClass, Frequency, MacroCategory, RegimeLabel
+from jlmacro.models.enums import (
+    AssetClass,
+    Frequency,
+    MacroCategory,
+    RegimeLabel,
+    TradeDirection,
+    TradeStatus,
+)
 
 
 class InstrumentOut(BaseModel):
@@ -265,6 +272,111 @@ class MonteCarloOut(BaseModel):
     probability_of_loss: float
     max_drawdown_percentiles: dict[str, float]
     probability_of_defensive_mode_breach: float
+
+
+class PortfolioOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    base_currency: str
+
+
+class PortfolioCreateRequest(BaseModel):
+    name: str
+    base_currency: str = "AUD"
+
+
+class TradeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    trade_id: str
+    portfolio_id: int
+    instrument_id: int
+    direction: TradeDirection
+    status: TradeStatus
+    thesis: str | None
+    macro_score: float | None
+    valuation_score: float | None
+    trend_score: float | None
+    positioning_score: float | None
+    catalyst_score: float | None
+    composite_score: float | None
+    entry_price: float | None
+    target_price: float | None
+    stop_price: float | None
+    portfolio_risk_pct: float | None
+    position_size: float | None
+    regime_at_entry: str | None
+    pm_approved_by: str | None
+    pm_approved_at: dt.datetime | None
+    extra: dict | None
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class TradeIdeaCreateRequest(BaseModel):
+    portfolio_id: int
+    symbol: str
+    direction: TradeDirection
+    thesis: str
+    macro_score: float | None = None
+    valuation_score: float | None = None
+    trend_score: float | None = None
+    positioning_score: float | None = None
+    catalyst_score: float | None = None
+    composite_score: float | None = None
+    entry_price: float | None = None
+    target_price: float | None = None
+    stop_price: float | None = None
+    portfolio_risk_pct: float | None = None
+    position_size: float | None = None
+    regime_at_entry: str | None = None
+    actor: str = "system"
+
+
+class TradeTransitionRequest(BaseModel):
+    new_status: TradeStatus
+    actor: str
+    reason: str | None = None
+
+
+class TradeCloseRequest(BaseModel):
+    exit_price: float
+    actor: str
+    reason: str | None = None
+
+
+class InvestmentMemoOut(BaseModel):
+    trade_id: str
+    symbol: str
+    instrument_name: str
+    direction: str
+    status: str
+    thesis: str | None
+    scores: dict[str, float | None]
+    regime_at_entry: str | None
+    entry_price: float | None
+    target_price: float | None
+    stop_price: float | None
+    portfolio_risk_pct: float | None
+    position_size: float | None
+    pm_approved_by: str | None
+    pm_approved_at: dt.datetime | None
+    generated_at: dt.datetime
+    markdown: str
+
+
+class PostTradeReviewOut(BaseModel):
+    trade_id: str
+    symbol: str
+    direction: str
+    entry_price: float | None
+    exit_price: float | None
+    realised_return_pct: float | None
+    composite_score_at_entry: float | None
+    thesis_direction_correct: bool | None
+    notes: str
 
 
 class HealthOut(BaseModel):

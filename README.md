@@ -8,7 +8,7 @@ portfolio management, risk management and decision support.
 broker-specific safeguards before any order can be transmitted.** See
 `jlmacro.config.Settings.jlmacro_live_trading_enabled` and `src/jlmacro/execution/`.
 
-## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1) + Phase 7 (v1)
+## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1) + Phase 7 (v1) + Phase 8 (v1)
 
 **Phase 1** (complete):
 
@@ -140,6 +140,28 @@ governor; see "Risk engine" below):
 - v1 doesn't yet model transaction costs, slippage, or financing - see "Known
   limitations" below
 
+**Phase 8** (trade lifecycle, investment memos, post-trade review, v1; see "Trade
+lifecycle" below):
+
+- Lifecycle state machine (`jlmacro.trades.lifecycle`): `IDEA -> WATCHLIST/APPROVED
+  -> OPEN -> REDUCE -> CLOSED`, with `INVALIDATED` reachable from any non-terminal
+  state - the first module that actually turns Phase 4/5's scores/weights into a
+  persisted `Trade` row (`jlmacro.models.portfolio.Trade`). Every transition is
+  validated against the state graph (an illegal jump is rejected) and audited via
+  `jlmacro.utils.audit.log_event`; moving to `APPROVED` requires a named human actor,
+  never `system` - the platform spec's human-approval gate.
+- Investment memo (`...trades.memo.generate_investment_memo`): a markdown rendering
+  of exactly what's already on the trade row (thesis, Phase 4 score breakdown,
+  regime at entry, Phase 5 sizing) - a memo is a view, never a second copy, so it
+  can't drift from the trade it describes.
+- Post-trade review (`...trades.review`): `close_trade` records an exit price and
+  drives the trade to `CLOSED`; `generate_post_trade_review` then compares the
+  realised, direction-adjusted return against the entry-time composite score's
+  implied view.
+- `POST /trades`, `/trades/{id}/transition`, `/trades/{id}/close`,
+  `GET /trades`, `/trades/{id}`, `/trades/{id}/memo`, `/trades/{id}/review` (plus a
+  minimal `/portfolios`) API endpoints, and a "Trade Journal" dashboard tab.
+
 See `docs/` and the phase list in the original platform specification for what comes
 next. Do not build later phases until this one is reviewed.
 
@@ -162,8 +184,10 @@ src/jlmacro/
   portfolio/     Covariance, position sizing, weighting and exposures (Phase 5).
   risk/          VaR/Expected Shortfall, stress testing, drawdown governor (Phase 6).
   backtest/      Event-driven backtest, walk-forward validation, Monte Carlo (Phase 7).
+  trades/        Trade lifecycle state machine, investment memos, post-trade review
+                 (Phase 8) - the layer that persists a jlmacro.models.portfolio.Trade.
   execution/, attribution/, reporting/, compliance/
-                 Package placeholders for Phase 8+ - deliberately near-empty for now.
+                 Package placeholders for Phase 9+ - deliberately near-empty for now.
   utils/         Structured logging, ID generation, audit logging.
 dashboards/      Streamlit app (presentation layer only - no business logic).
 scripts/         Operational scripts (synthetic data generator).
@@ -578,6 +602,47 @@ curl -X POST "http://localhost:8000/backtest/monte-carlo" -H "Content-Type: appl
 - None of this models transaction costs, slippage, financing, or intra-period
   rebalancing yet - see "Known limitations" below.
 
+## Trade lifecycle (Phase 8)
+
+```bash
+curl -X POST "http://localhost:8000/portfolios" -H "Content-Type: application/json" \
+  -d '{"name": "Main Fund", "base_currency": "AUD"}'
+curl -X POST "http://localhost:8000/trades" -H "Content-Type: application/json" \
+  -d '{"portfolio_id": 1, "symbol": "SPX", "direction": "long", "thesis": "...", "composite_score": 72}'
+curl -X POST "http://localhost:8000/trades/<trade_id>/transition" -H "Content-Type: application/json" \
+  -d '{"new_status": "approved", "actor": "jesse.lourens"}'
+curl -X POST "http://localhost:8000/trades/<trade_id>/close" -H "Content-Type: application/json" \
+  -d '{"exit_price": 4450.0, "actor": "jesse.lourens"}'
+curl "http://localhost:8000/trades/<trade_id>/memo"
+curl "http://localhost:8000/trades/<trade_id>/review"
+```
+
+- **Lifecycle** (`jlmacro.trades.lifecycle`) is a small explicit state graph
+  (`ALLOWED_TRANSITIONS`) over `jlmacro.models.portfolio.Trade`/`TradeStatus`: `IDEA
+  -> WATCHLIST/APPROVED -> OPEN -> REDUCE -> CLOSED`, with `INVALIDATED` reachable
+  from any non-terminal state. `transition()` rejects anything not in the graph (a
+  trade can't jump straight from `IDEA` to `OPEN`), requires a named human actor to
+  reach `APPROVED` (never `system` - the platform spec's human-approval gate), and
+  logs every change through `jlmacro.utils.audit.log_event` as well as appending it
+  to the trade's own `extra["lifecycle_history"]`, so the row carries its full
+  history without a join.
+- **Investment memo** (`...trades.memo.generate_investment_memo`) renders a trade's
+  thesis, Phase 4 signal breakdown, regime-at-entry, and Phase 5 sizing into a
+  markdown document - purely a *view* of what `create_trade_idea` already recorded
+  on the row, never a second copy of that data, so a memo can never drift from the
+  trade it describes.
+- **Post-trade review** (`...trades.review`) is two functions: `close_trade` records
+  an `exit_price` and drives the trade to `CLOSED` (through the same audited
+  `transition` path as any other state change); `generate_post_trade_review` then
+  compares the realised, direction-adjusted return against the entry-time composite
+  score's implied view (bullish for a long, bearish for a short) - nothing more
+  elaborate than that. A proper attribution breakdown (how much of the return came
+  from the macro call vs. entry timing vs. noise) is Phase 9's job once there's a
+  NAV/attribution engine to lean on.
+- This is the first phase that persists anything - `Trade` rows created here are
+  real, auditable, and the first genuine input Phase 9's NAV engine and Phase 10's
+  paper broker will have to work with.
+
 ## Known limitations
 
 - Market-data providers (a real price vendor) and ECB/BoE/BoJ/World Bank/IMF macro
@@ -586,13 +651,20 @@ curl -X POST "http://localhost:8000/backtest/monte-carlo" -H "Content-Type: appl
   against live data end to end (see "Real data adapters" above for which are
   documentation-verified vs. best-guess) - do a live run before relying on them.
   ABS's GDP indicator has no mapping at all yet (data key not confirmed).
-- The API has portfolio-construction (Phase 5), risk (Phase 6) and backtesting
-  (Phase 7) endpoints, but no execution endpoints or persisted positions yet, and
-  nothing here can place an order - those land from Phase 8 onward as their
-  respective engines are built.
-- The dashboard has price/macro/regime/signals/portfolio/risk/backtest browsers +
-  system status, not the full 8-page CIO dashboard described in the platform spec -
-  that requires the attribution/reporting layers built in later phases.
+- The API has portfolio-construction (Phase 5), risk (Phase 6), backtesting (Phase 7)
+  and trade-lifecycle (Phase 8) endpoints, but no execution endpoints yet, and
+  nothing here can place a real order - that lands in Phase 10's paper broker.
+- The dashboard has price/macro/regime/signals/portfolio/risk/backtest/trade-journal
+  browsers + system status, not the full 8-page CIO dashboard described in the
+  platform spec - that requires the attribution/reporting layers built in later
+  phases.
+- Phase 8's `Position` table still isn't written to - opening a `Trade` doesn't yet
+  update a `Position` row (quantity/average price), since nothing has needed
+  aggregate position-level state until now. That wiring is natural Phase 9/10 work,
+  once there's a NAV engine and a paper broker actually filling orders.
+- Phase 8's post-trade review compares realised return direction to the entry-time
+  composite score only - it doesn't yet decompose *why* a trade won or lost (macro
+  call vs. entry timing vs. noise); that's Phase 9's attribution engine's job.
 - `run_backtest` (Phase 7) doesn't model transaction costs, slippage, financing, or
   intra-period rebalancing, and its `_decide_weights` recomputes the Phase 4
   composite score for every symbol at every rebalance date - fine for the modest
@@ -600,13 +672,16 @@ curl -X POST "http://localhost:8000/backtest/monte-carlo" -H "Content-Type: appl
   or a long, finely-rebalanced backtest. Walk-forward validation (Phase 7) checks
   consistency across historical windows, not out-of-sample generalisation of a
   fitted model - there's nothing fitted to generalise until Phase 11's ML layer.
-- `Portfolio`/`Position`/`Trade` tables exist (for schema/migration stability) but are
-  not yet populated by any business logic - Phase 5/6's weights/sizes/risk numbers
-  are computed on demand and returned, never persisted.
+- `Portfolio` and `Trade` are now populated (Phase 8) - but `Position` still isn't
+  (see above), and Phase 5/6's weights/sizes/risk numbers remain computed on demand
+  and returned, never automatically persisted into a `Trade` - Phase 8's
+  `create_trade_idea` takes them as explicit arguments; nothing wires Phase 5's
+  output into it automatically yet.
 - The risk engine (Phase 6) computes numbers on demand but doesn't automatically cut
-  anything - there is still no persisted position to cut (Phase 8) and no NAV history
-  to compute a real drawdown from (Phase 9); `GET /risk/drawdown` takes a
-  `current_drawdown` you supply, not one it derives itself.
+  anything - there is still no NAV history to compute a real drawdown from (Phase 9);
+  `GET /risk/drawdown` takes a `current_drawdown` you supply, not one it derives
+  itself. It also isn't wired to the Phase 8 lifecycle - nothing stops a trade from
+  being approved/opened regardless of what the risk engine would say about it.
 - `apply_hypothetical_scenario` (`jlmacro.risk.stress`) only maps 6 of the ~9 distinct
   shock keys used across `config/scenarios.yaml`'s hypothetical scenarios onto actual
   instruments (equity_indices, rates_bp, usd_index, audusd, oil, gold) - the rest
@@ -650,13 +725,15 @@ immediately benefit from broader real (non-synthetic) coverage across the 6 coun
 and a real market-data vendor would very likely also carry real earnings/fundamentals
 data that could replace the signal engine's equity valuation proxy.
 
-Phase 8 next: the trade lifecycle state machine and investment memo generation -
-the layer that finally turns Phase 5/6/7's proposals/numbers into a persisted
-`Position`/`Trade` row, closing the loop the risk engine's drawdown governor and the
-backtester's realised-P&L calculation have both been waiting on. Widening
-`jlmacro.risk.stress`'s hypothetical-shock mapping (a credit-spread/CDS proxy, an
-equity-vol-percentile proxy) and sourcing real historical prices so
-`apply_historical_scenario` can actually replay 2008/2020/etc. - and modelling
-transaction costs/slippage in `jlmacro.backtest.engine` - would also directly improve
-Phases 6 and 7 respectively, whenever a real market-data vendor is wired in (still
-Phase 2's remaining item, below).
+Phase 9 next: the NAV engine (high-water mark, performance fees), attribution, and
+the remaining CIO dashboard pages - the layer that finally gives Phase 6's drawdown
+governor a real `current_drawdown` to read instead of a manually-supplied one, and
+gives Phase 8's post-trade review something better than "did the score's direction
+turn out right" to say about a closed trade. Wiring Phase 8's `Trade` rows into an
+actual `Position` (quantity/average price, updated on open/reduce/close) is natural
+groundwork for that same phase. Widening `jlmacro.risk.stress`'s hypothetical-shock
+mapping (a credit-spread/CDS proxy, an equity-vol-percentile proxy) and sourcing real
+historical prices so `apply_historical_scenario` can actually replay 2008/2020/etc. -
+and modelling transaction costs/slippage in `jlmacro.backtest.engine` - would also
+directly improve Phases 6 and 7 respectively, whenever a real market-data vendor is
+wired in (still Phase 2's remaining item, below).

@@ -24,6 +24,7 @@ from jlmacro.api.routers import (
     regime,
     risk,
     signals,
+    trades,
 )
 from jlmacro.config import get_settings
 from jlmacro.utils.logging import configure_logging
@@ -47,6 +48,7 @@ app.include_router(signals.router)
 app.include_router(portfolio.router)
 app.include_router(risk.router)
 app.include_router(backtest.router)
+app.include_router(trades.router)
 
 
 @app.get("/")

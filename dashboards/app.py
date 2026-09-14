@@ -24,7 +24,9 @@ from jlmacro.backtest.engine import run_backtest
 from jlmacro.backtest.monte_carlo import bootstrap_terminal_nav
 from jlmacro.config import get_settings, load_yaml_config
 from jlmacro.database.session import session_scope
+from jlmacro.models.enums import TradeDirection, TradeStatus
 from jlmacro.models.instrument import Instrument
+from jlmacro.models.portfolio import Portfolio, Trade
 from jlmacro.models.signals import compute_investment_score
 from jlmacro.portfolio.construction import (
     equal_risk_contribution_weights,
@@ -58,6 +60,14 @@ from jlmacro.risk.drawdown import (
 )
 from jlmacro.risk.stress import apply_historical_scenario, apply_hypothetical_scenario
 from jlmacro.risk.var import compute_all_var_methods
+from jlmacro.trades.lifecycle import (
+    ALLOWED_TRANSITIONS,
+    InvalidTransitionError,
+    create_trade_idea,
+    transition,
+)
+from jlmacro.trades.memo import generate_investment_memo
+from jlmacro.trades.review import close_trade, generate_post_trade_review
 
 st.set_page_config(page_title="JL Global Macro Platform", layout="wide")
 
@@ -94,6 +104,7 @@ if instruments_df.empty:
     tab_portfolio,
     tab_risk,
     tab_backtest,
+    tab_journal,
     tab_universe,
 ) = st.tabs(
     [
@@ -104,6 +115,7 @@ if instruments_df.empty:
         "Portfolio",
         "Risk",
         "Backtest",
+        "Trade Journal",
         "Asset Universe",
     ]
 )
@@ -819,6 +831,182 @@ with tab_backtest:
                 "Probability of breaching defensive-mode drawdown",
                 f"{mc_result.probability_of_defensive_mode_breach:.1%}",
             )
+
+with tab_journal:
+    st.subheader("Trade journal")
+    st.caption(
+        "Create trade ideas, move them through the lifecycle (idea -> watchlist/"
+        "approved -> open -> reduce -> closed, or invalidated at any non-terminal "
+        "point), and read the investment memo / post-trade review generated from "
+        "each trade's own recorded data. Every transition is audited."
+    )
+
+    with session_scope() as session:
+        portfolios = list(session.scalars(select(Portfolio).order_by(Portfolio.name)))
+
+    jcol1, jcol2 = st.columns(2)
+    with jcol1:
+        st.caption("Create a portfolio")
+        new_portfolio_name = st.text_input("Portfolio name", key="journal_new_portfolio_name")
+        if st.button("Create portfolio", key="journal_create_portfolio") and new_portfolio_name:
+            with session_scope() as session:
+                if session.scalar(select(Portfolio).where(Portfolio.name == new_portfolio_name)):
+                    st.warning("A portfolio with that name already exists.")
+                else:
+                    session.add(Portfolio(name=new_portfolio_name))
+            st.rerun()
+
+    if not portfolios:
+        st.info("Create a portfolio above to start logging trade ideas.")
+    else:
+        with jcol2:
+            selected_portfolio = st.selectbox(
+                "Portfolio", portfolios, format_func=lambda p: p.name, key="journal_portfolio"
+            )
+
+        st.divider()
+        st.caption("New trade idea")
+        ncol1, ncol2, ncol3 = st.columns(3)
+        idea_symbol = ncol1.selectbox(
+            "Instrument", sorted(instruments_df["symbol"].unique()), key="journal_idea_symbol"
+        )
+        idea_direction = ncol2.selectbox(
+            "Direction", ["long", "short"], key="journal_idea_direction"
+        )
+        idea_composite = ncol3.number_input(
+            "Composite score (optional)",
+            min_value=0.0,
+            max_value=100.0,
+            value=70.0,
+            key="journal_idea_composite",
+        )
+        idea_thesis = st.text_area("Thesis", key="journal_idea_thesis")
+        idea_actor = st.text_input(
+            "Your name (required to approve later)", key="journal_idea_actor"
+        )
+
+        if st.button("Log trade idea", key="journal_log_idea") and idea_thesis:
+            with session_scope() as session:
+                instrument = session.scalar(
+                    select(Instrument).where(Instrument.symbol == idea_symbol)
+                )
+                create_trade_idea(
+                    session,
+                    portfolio_id=selected_portfolio.id,
+                    instrument_id=instrument.id,
+                    direction=(
+                        TradeDirection.LONG if idea_direction == "long" else TradeDirection.SHORT
+                    ),
+                    thesis=idea_thesis,
+                    composite_score=idea_composite,
+                    actor=idea_actor or "system",
+                )
+            st.rerun()
+
+        st.divider()
+        st.caption("Trades in this portfolio")
+        with session_scope() as session:
+            trades = list(
+                session.scalars(
+                    select(Trade)
+                    .where(Trade.portfolio_id == selected_portfolio.id)
+                    .order_by(Trade.created_at.desc())
+                )
+            )
+            trade_symbols = {
+                t.instrument_id: session.get(Instrument, t.instrument_id).symbol for t in trades
+            }
+
+        if not trades:
+            st.info("No trades logged yet for this portfolio.")
+        else:
+            trades_df = pd.DataFrame(
+                [
+                    {
+                        "trade_id": t.trade_id,
+                        "symbol": trade_symbols[t.instrument_id],
+                        "direction": t.direction.value,
+                        "status": t.status.value,
+                        "composite_score": t.composite_score,
+                        "created_at": t.created_at,
+                    }
+                    for t in trades
+                ]
+            )
+            st.dataframe(trades_df, width="stretch", hide_index=True)
+
+            st.divider()
+            st.caption("Manage one trade")
+            selected_trade_id = st.selectbox(
+                "Trade", trades_df["trade_id"].tolist(), key="journal_selected_trade"
+            )
+            with session_scope() as session:
+                selected_trade = session.scalar(
+                    select(Trade).where(Trade.trade_id == selected_trade_id)
+                )
+                allowed_next = sorted(s.value for s in ALLOWED_TRANSITIONS[selected_trade.status])
+
+            mcol1, mcol2, mcol3 = st.columns(3)
+            with mcol1:
+                if allowed_next:
+                    next_status = st.selectbox("Move to", allowed_next, key="journal_next_status")
+                    transition_actor = st.text_input("Actor", key="journal_transition_actor")
+                    if st.button("Apply transition", key="journal_apply_transition"):
+                        with session_scope() as session:
+                            trade_to_move = session.scalar(
+                                select(Trade).where(Trade.trade_id == selected_trade_id)
+                            )
+                            try:
+                                transition(
+                                    session,
+                                    trade_to_move,
+                                    TradeStatus(next_status),
+                                    actor=transition_actor or "system",
+                                )
+                                st.success(f"Moved to {next_status}.")
+                            except InvalidTransitionError as exc:
+                                st.error(str(exc))
+                else:
+                    st.caption("Terminal status - no further transitions.")
+
+            with mcol2:
+                if selected_trade.status in (TradeStatus.OPEN, TradeStatus.REDUCE):
+                    exit_price = st.number_input(
+                        "Exit price", min_value=0.0, key="journal_exit_price"
+                    )
+                    close_actor = st.text_input("Closed by", key="journal_close_actor")
+                    if st.button("Close trade", key="journal_close_trade") and exit_price > 0:
+                        with session_scope() as session:
+                            trade_to_close = session.scalar(
+                                select(Trade).where(Trade.trade_id == selected_trade_id)
+                            )
+                            close_trade(
+                                session,
+                                trade_to_close,
+                                exit_price=exit_price,
+                                actor=close_actor or "system",
+                            )
+                        st.success("Trade closed.")
+
+            with mcol3:
+                st.caption("View")
+                if st.button("Show investment memo", key="journal_show_memo"):
+                    with session_scope() as session:
+                        trade_for_memo = session.scalar(
+                            select(Trade).where(Trade.trade_id == selected_trade_id)
+                        )
+                        memo = generate_investment_memo(session, trade_for_memo)
+                    st.markdown(memo.to_markdown())
+
+                if selected_trade.status == TradeStatus.CLOSED and st.button(
+                    "Show post-trade review", key="journal_show_review"
+                ):
+                    with session_scope() as session:
+                        trade_for_review = session.scalar(
+                            select(Trade).where(Trade.trade_id == selected_trade_id)
+                        )
+                        review = generate_post_trade_review(session, trade_for_review)
+                    st.write(review)
 
 with tab_universe:
     st.subheader("Configured asset universe")
