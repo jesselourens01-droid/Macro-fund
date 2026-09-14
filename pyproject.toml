@@ -26,16 +26,18 @@ dependencies = [
     "structlog>=24.4",
     "python-dotenv>=1.0",
     "httpx>=0.27",
-]
-
-[project.optional-dependencies]
-ml = [
+    # cvxpy/xgboost/lightgbm are hard, module-level imports in the core platform
+    # (jlmacro.portfolio.construction's default equal-risk-contribution weighting;
+    # jlmacro.models.ml.models's candidate models) - not truly optional, so they
+    # live here rather than in [project.optional-dependencies] where `pip install
+    # -e ".[dev]"` (used by the Dockerfile and `make install`) would silently skip
+    # them and break both at runtime.
+    "cvxpy>=1.5",
     "xgboost>=2.1",
     "lightgbm>=4.5",
 ]
-opt = [
-    "cvxpy>=1.5",
-]
+
+[project.optional-dependencies]
 polars = [
     "polars>=1.9",
 ]

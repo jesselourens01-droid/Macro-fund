@@ -1,9 +1,12 @@
 """Candidate models for the ML research layer - logistic regression, an elastic-net-
-penalised logistic regression, a random forest, and a gradient-boosted model
-(LightGBM; `xgboost` is also a declared dependency and a drop-in alternative,
-picked here for its lighter default footprint). Every factory returns a fresh,
-unfitted estimator - callers (`jlmacro.models.ml.evaluation`) are responsible for
-fitting one per walk-forward fold, never reusing a fitted instance across folds.
+penalised logistic regression, a random forest, and two gradient-boosted
+implementations (LightGBM as the default `gradient_boosting`; XGBoost as
+`gradient_boosting_xgboost`, `n_jobs=1`/histogram tree method since this is a
+CPU-only research platform with no GPU infrastructure - the platform spec names
+both libraries explicitly, so both get exercised rather than one sitting as unused
+dead weight). Every factory returns a fresh, unfitted estimator - callers
+(`jlmacro.models.ml.evaluation`) are responsible for fitting one per walk-forward
+fold, never reusing a fitted instance across folds.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ from lightgbm import LGBMClassifier
 from sklearn.base import ClassifierMixin
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
 
 _RANDOM_STATE = 42
 
@@ -32,6 +36,14 @@ MODEL_FACTORIES: dict[str, Callable[[], ClassifierMixin]] = {
     ),
     "gradient_boosting": lambda: LGBMClassifier(
         n_estimators=200, max_depth=5, random_state=_RANDOM_STATE, verbose=-1
+    ),
+    "gradient_boosting_xgboost": lambda: XGBClassifier(
+        n_estimators=200,
+        max_depth=5,
+        random_state=_RANDOM_STATE,
+        tree_method="hist",
+        device="cpu",
+        n_jobs=1,
     ),
 }
 

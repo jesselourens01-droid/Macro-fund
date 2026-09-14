@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     # override alongside broker-specific safeguards (see src/jlmacro/execution).
     jlmacro_live_trading_enabled: bool = False
 
+    # API key for jlmacro.api.security's auth middleware. None (the default) leaves
+    # the API open - fine for local development, never for a reachable deployment.
+    # Set this before exposing the API beyond localhost.
+    jlmacro_api_key: str | None = None
+
     # Real macro data provider credentials (Phase 2). None of these are required for
     # Phase 1's synthetic data path. RBA and ABS do not require API keys.
     fred_api_key: str | None = None

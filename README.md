@@ -8,7 +8,14 @@ portfolio management, risk management and decision support.
 broker-specific safeguards before any order can be transmitted.** See
 `jlmacro.config.Settings.jlmacro_live_trading_enabled` and `src/jlmacro/execution/`.
 
-## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1) + Phase 7 (v1) + Phase 8 (v1) + Phase 9 (v1) + Phase 10 (v1) + Phase 11 (v1)
+## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1) + Phase 7 (v1) + Phase 8 (v1) + Phase 9 (v1) + Phase 10 (v1) + Phase 11 (v1) + Phase 12 (v1)
+
+All 12 phases of the original platform specification now have a v1 built and
+tested. "v1" is doing real work in that sentence: several engines lean on
+honestly-documented proxies pending real data sources, the ML layer hasn't been
+validated against real market history, and the platform has never connected to a
+real broker or been used with real capital - see "Known limitations" below for the
+full, specific list before relying on any of this for actual trading decisions.
 
 **Phase 1** (complete):
 
@@ -213,8 +220,9 @@ fees" below):
   construction, since it's the same function every rule-based signal relies on.
   Label: the sign of the forward return over a fixed horizon.
 - Models (`...models.ml.models`): logistic regression, an elastic-net-penalised
-  logistic regression, a random forest, and a LightGBM gradient-boosted model
-  (`xgboost` is also a declared dependency and a drop-in alternative).
+  logistic regression, a random forest, and two gradient-boosted implementations
+  (LightGBM as the default; XGBoost, CPU-only, as an explicit alternative - both
+  named in the platform spec, so both are actually exercised).
 - Walk-forward validation against a baseline (`...models.ml.evaluation`):
   `TimeSeriesSplit` (strictly chronological, never shuffled) so no fold's training
   features can ever include what a later fold's forward-looking label reveals,
@@ -224,8 +232,27 @@ fees" below):
 - This is the first place anything in this platform is actually *fitted*, as
   opposed to the rule-based engines built in every prior phase.
 
-See `docs/` and the phase list in the original platform specification for what comes
-next. Do not build later phases until this one is reviewed.
+**Phase 12** (production hardening and final review, v1; see "Production hardening"
+below):
+
+- Optional API-key authentication (`jlmacro.api.security.ApiKeyMiddleware`) - off by
+  default for local development, a constant-time-checked `X-API-Key` header once
+  `JLMACRO_API_KEY` is set.
+- A non-root container user in the `Dockerfile`.
+- `requirements-lock.txt` - a pinned-version snapshot of a fully installed, fully
+  tested environment, for anyone who wants a reproducible install alongside
+  `pyproject.toml`'s intentionally loose development bounds.
+- A codebase-wide security sweep (no `eval`/`exec`/`shell=True`/`pickle.loads`, no
+  raw-string-formatted SQL, no CORS middleware, no committed secrets) and a final
+  full ruff/black/mypy/pytest/docker-compose verification pass across all 12 phases.
+- This is the spec's explicit closing phase - a hardening and review pass across
+  what already exists, not a new engine. See "Recommended next work" at the bottom
+  for what's genuinely still open (real-data integration, a handful of
+  not-yet-wired-together loops between existing engines).
+
+This README documents all 12 phases of the original platform specification, each
+built and reviewed in sequence. See "Known limitations" and "Recommended next work"
+below for what to check before relying on any of this for real capital.
 
 ## Architecture at a glance
 
@@ -812,9 +839,11 @@ curl -X POST "http://localhost:8000/ml/evaluate" -H "Content-Type: application/j
   silently computed from a stale last price.
 - **Models** (`...models.ml.models.MODEL_FACTORIES`): `logistic`,
   `elastic_net_logistic` (elastic-net-penalised logistic regression via
-  `l1_ratio`), `random_forest`, and `gradient_boosting` (LightGBM - `xgboost` is
-  also a declared dependency and a drop-in alternative). Every factory returns a
-  fresh, unfitted estimator; nothing reuses a fitted instance across folds.
+  `l1_ratio`), `random_forest`, `gradient_boosting` (LightGBM, the default GBM), and
+  `gradient_boosting_xgboost` (XGBoost, CPU-only - `tree_method="hist"`,
+  `device="cpu"` - since this is a research platform with no GPU infrastructure).
+  Every factory returns a fresh, unfitted estimator; nothing reuses a fitted
+  instance across folds.
 - **Walk-forward validation** (`...models.ml.evaluation.walk_forward_evaluate`)
   uses `sklearn.model_selection.TimeSeriesSplit` - strictly chronological train/test
   splits, never shuffled, so no fold's training features can ever include
@@ -827,6 +856,43 @@ curl -X POST "http://localhost:8000/ml/evaluate" -H "Content-Type: application/j
   as opposed to the transparent rule-based engines built in Phases 3-10 - treat its
   output as exploratory research, not a validated signal; it has not been evaluated
   against real (non-synthetic) market history.
+
+## Production hardening (Phase 12)
+
+- **Optional API-key authentication** (`jlmacro.api.security.ApiKeyMiddleware`): the
+  API has no auth by default (fine for local development against a database only
+  reachable from `localhost`). Set `JLMACRO_API_KEY` before exposing it beyond
+  localhost - every request then needs a matching `X-API-Key` header, checked with
+  `hmac.compare_digest` (constant-time, so response timing can't be used to guess
+  the key one byte at a time). `/health`, `/docs`, `/redoc`, `/openapi.json` and `/`
+  stay unauthenticated even when a key is set, since infrastructure health checks
+  and interactive API exploration shouldn't need a live key just to load.
+- **Non-root container user**: the Dockerfile now creates and switches to an
+  unprivileged `jlmacro` user before `CMD` runs - defense in depth, not a
+  substitute for the app-level safeguards (live trading disabled by default, the
+  API-key middleware above) that actually gate what the container can do.
+- **`requirements-lock.txt`**: `pyproject.toml` intentionally uses loose (`>=`)
+  version bounds for development flexibility; this is a `pip freeze` of a fully
+  installed, fully-tested environment for anyone who wants a reproducible pinned
+  install (`pip install -e . && pip install -r requirements-lock.txt`, or use it as
+  a reference to pin a deployment's own lockfile).
+- Security review swept the codebase for the obvious sharp edges: no `eval`/`exec`/
+  `os.system`/`subprocess(shell=True)`/`pickle.loads` anywhere, every database query
+  goes through SQLAlchemy's ORM/`select()` (no raw string-formatted SQL), no CORS
+  middleware is configured (so cross-origin requests are blocked by browsers by
+  default - add `CORSMiddleware` explicitly and deliberately if a browser-based
+  frontend ever needs it), `.env` stays git-ignored and was never committed, and no
+  hardcoded credentials exist outside clearly-named `change_me_*` local-dev
+  defaults.
+- **Packaging bug found and fixed**: `cvxpy`/`xgboost`/`lightgbm` were declared under
+  `[project.optional-dependencies]` (`ml`/`opt` extras) even though they're hard,
+  module-level imports in the core platform (`jlmacro.portfolio.construction`'s
+  default equal-risk-contribution weighting; `jlmacro.models.ml.models`'s candidate
+  models) - `pip install -e ".[dev]"` (what the Dockerfile and `make install` both
+  actually run) silently skipped them, which would have broken Phase 5's default
+  portfolio-construction method and all of Phase 11 in any fresh deployment. Fixed
+  by moving all three into the base `dependencies` list; verified with `pip check`
+  after reinstalling from the corrected `pyproject.toml`.
 
 ## Known limitations
 
@@ -921,19 +987,17 @@ curl -X POST "http://localhost:8000/ml/evaluate" -H "Content-Type: application/j
 
 ## Recommended next work
 
-Remaining Phase 2: a real market-data provider (price vendor) behind
-`BaseMarketDataProvider`, and optionally ECB/BoE/BoJ/World Bank/IMF macro adapters
-following the same pattern as FRED/RBA/ABS - the regime and signal engines would
-immediately benefit from broader real (non-synthetic) coverage across the 6 countries,
-and a real market-data vendor would very likely also carry real earnings/fundamentals
-data that could replace the signal engine's equity valuation proxy.
+All 12 phases of the original specification are built; what's left is real-data
+integration and closing a handful of loops the phases above already flag. Remaining
+Phase 2: a real market-data provider (price vendor) behind `BaseMarketDataProvider`,
+and optionally ECB/BoE/BoJ/World Bank/IMF macro adapters following the same pattern
+as FRED/RBA/ABS - the regime and signal engines would immediately benefit from
+broader real (non-synthetic) coverage across the 6 countries, and a real market-data
+vendor would very likely also carry real earnings/fundamentals data that could
+replace the signal engine's equity valuation proxy.
 
-Phase 12 next: production hardening and a final review pass across everything built
-so far (full lint/type/test sweep, a README pass for accuracy, a security review of
-the whole platform) - the spec's explicit closing phase, not a new engine.
-
-Worth doing alongside or shortly after it, roughly in order of how directly each
-closes a loop already flagged above: actually wiring
+Beyond that, roughly in order of how directly each closes a loop already flagged
+above: actually wiring
 `jlmacro.nav.engine.current_drawdown` into
 `jlmacro.risk.drawdown.risk_budget_fraction_for_drawdown` (and that, in turn, into
 the Phase 8 lifecycle's `APPROVED`/`OPEN` transitions, now that Phase 10 gives it
@@ -948,4 +1012,4 @@ credit-spread/CDS proxy, an equity-vol-percentile proxy) and sourcing real histo
 prices so `apply_historical_scenario` can actually replay 2008/2020/etc. - and
 modelling transaction costs/slippage in `jlmacro.backtest.engine` - would also
 directly improve Phases 6 and 7 respectively, whenever that real market-data vendor
-is wired in (still Phase 2's remaining item, below).
+is wired in (still Phase 2's remaining item, above).
