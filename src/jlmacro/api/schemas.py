@@ -433,6 +433,42 @@ class OrderOut(BaseModel):
     filled_at: dt.datetime | None
 
 
+class MLEvaluateRequest(BaseModel):
+    symbols: list[str]
+    dates: list[dt.date]
+    horizon_days: int = 21
+    model_names: list[str] = [
+        "logistic",
+        "elastic_net_logistic",
+        "random_forest",
+        "gradient_boosting",
+    ]
+    n_splits: int = 5
+
+
+class MLFoldOut(BaseModel):
+    fold: int
+    train_size: int
+    test_size: int
+    model_accuracy: float
+    model_auc: float | None
+    baseline_accuracy: float
+
+
+class MLModelResultOut(BaseModel):
+    model_name: str
+    folds: list[MLFoldOut]
+    mean_model_accuracy: float
+    mean_baseline_accuracy: float
+    mean_model_auc: float | None
+    beats_baseline: bool
+
+
+class MLEvaluateOut(BaseModel):
+    dataset_rows: int
+    results: list[MLModelResultOut]
+
+
 class HealthOut(BaseModel):
     status: str
     environment: str

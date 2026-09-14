@@ -8,7 +8,7 @@ portfolio management, risk management and decision support.
 broker-specific safeguards before any order can be transmitted.** See
 `jlmacro.config.Settings.jlmacro_live_trading_enabled` and `src/jlmacro/execution/`.
 
-## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1) + Phase 7 (v1) + Phase 8 (v1) + Phase 9 (v1) + Phase 10 (v1)
+## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1) + Phase 7 (v1) + Phase 8 (v1) + Phase 9 (v1) + Phase 10 (v1) + Phase 11 (v1)
 
 **Phase 1** (complete):
 
@@ -206,6 +206,24 @@ fees" below):
 - `POST /trades/{id}/open-order`, `/trades/{id}/close-order` API endpoints, and a
   "Submit via paper broker" control in the Trade Journal dashboard tab.
 
+**Phase 11** (ML research layer, v1; see "ML research layer" below):
+
+- Features (`jlmacro.models.ml.features.build_feature_dataset`): exactly the Phase 4
+  composite score's own five components - already point-in-time correct by
+  construction, since it's the same function every rule-based signal relies on.
+  Label: the sign of the forward return over a fixed horizon.
+- Models (`...models.ml.models`): logistic regression, an elastic-net-penalised
+  logistic regression, a random forest, and a LightGBM gradient-boosted model
+  (`xgboost` is also a declared dependency and a drop-in alternative).
+- Walk-forward validation against a baseline (`...models.ml.evaluation`):
+  `TimeSeriesSplit` (strictly chronological, never shuffled) so no fold's training
+  features can ever include what a later fold's forward-looking label reveals,
+  compared against a majority-class predictor fit on each fold's own training
+  labels - "does the model beat guessing the more common outcome."
+- `POST /ml/evaluate` API endpoint, and an "ML Research" dashboard tab.
+- This is the first place anything in this platform is actually *fitted*, as
+  opposed to the rule-based engines built in every prior phase.
+
 See `docs/` and the phase list in the original platform specification for what comes
 next. Do not build later phases until this one is reviewed.
 
@@ -224,7 +242,9 @@ src/jlmacro/
                  Portfolio/Position/Trade, RegimeSnapshot. models/regime holds the
                  macro regime engine (Phase 3); models/signals holds the quantitative
                  signal engine - trend/valuation/positioning/catalyst/composite
-                 (Phase 4); models/ml holds the future ML research layer.
+                 (Phase 4); models/ml holds the ML research layer - candidate
+                 models, feature/label construction, walk-forward evaluation
+                 (Phase 11).
   portfolio/     Covariance, position sizing, weighting and exposures (Phase 5).
   risk/          VaR/Expected Shortfall, stress testing, drawdown governor (Phase 6).
   backtest/      Event-driven backtest, walk-forward validation, Monte Carlo (Phase 7).
@@ -236,7 +256,7 @@ src/jlmacro/
   execution/     BaseBroker/PaperBroker, pre-trade safeguards, and the service layer
                  connecting orders to the trade lifecycle (Phase 10).
   reporting/, compliance/
-                 Package placeholders for Phase 11+ - deliberately near-empty for now.
+                 Package placeholders for Phase 12+ - deliberately near-empty for now.
   utils/         Structured logging, ID generation, audit logging.
 dashboards/      Streamlit app (presentation layer only - no business logic).
 scripts/         Operational scripts (synthetic data generator).
@@ -769,6 +789,45 @@ curl -X POST "http://localhost:8000/trades/<trade_id>/close-order" -H "Content-T
   rejected or still-`PENDING` order leaves the trade exactly where it was - nothing
   here ever half-opens or half-closes a trade.
 
+## ML research layer (Phase 11)
+
+```bash
+curl -X POST "http://localhost:8000/ml/evaluate" -H "Content-Type: application/json" \
+  -d '{"symbols": ["SPX", "US10Y"], "dates": ["2025-01-01", "2025-02-01", "2025-03-01"], "horizon_days": 21}'
+```
+
+- **Features** (`jlmacro.models.ml.features.build_feature_dataset`) are exactly the
+  Phase 4 composite score's own five components (`macro_score`, `valuation_score`,
+  `trend_score`, `positioning_score`, `catalyst_score`) at a given `as_of` - no new
+  feature engineering, since those components are already point-in-time correct by
+  construction. A row with any missing component is dropped rather than imputed -
+  fabricating a missing signal as a neutral value would misstate what was actually
+  knowable. **Note**: `macro_score` requires a persisted `RegimeSnapshot` for the
+  relevant country to exist at all (`jlmacro.models.regime.compute_and_persist_snapshot`,
+  Phase 3) - without one, every row for that country's instruments gets dropped.
+- **Label**: the sign of the forward return over a fixed `horizon_days` window,
+  computed from real point-in-time closes. A label is only produced when price
+  history genuinely extends to (within a few days of) the target date - a horizon
+  that runs off the end of available history is reported as "no label yet," never
+  silently computed from a stale last price.
+- **Models** (`...models.ml.models.MODEL_FACTORIES`): `logistic`,
+  `elastic_net_logistic` (elastic-net-penalised logistic regression via
+  `l1_ratio`), `random_forest`, and `gradient_boosting` (LightGBM - `xgboost` is
+  also a declared dependency and a drop-in alternative). Every factory returns a
+  fresh, unfitted estimator; nothing reuses a fitted instance across folds.
+- **Walk-forward validation** (`...models.ml.evaluation.walk_forward_evaluate`)
+  uses `sklearn.model_selection.TimeSeriesSplit` - strictly chronological train/test
+  splits, never shuffled, so no fold's training features can ever include
+  information a later fold's forward-looking label reveals. Each fold is compared
+  against a majority-class baseline fit on that fold's own training labels -
+  "does the model beat guessing the more common outcome," the least a model has to
+  clear to be worth reporting. `compare_models` runs several model names over the
+  same dataset for a side-by-side comparison.
+- This is the first place anything in this platform is actually *fitted* to data,
+  as opposed to the transparent rule-based engines built in Phases 3-10 - treat its
+  output as exploratory research, not a validated signal; it has not been evaluated
+  against real (non-synthetic) market history.
+
 ## Known limitations
 
 - Market-data providers (a real price vendor) and ECB/BoE/BoJ/World Bank/IMF macro
@@ -778,14 +837,22 @@ curl -X POST "http://localhost:8000/trades/<trade_id>/close-order" -H "Content-T
   documentation-verified vs. best-guess) - do a live run before relying on them.
   ABS's GDP indicator has no mapping at all yet (data key not confirmed).
 - The API has portfolio-construction (Phase 5), risk (Phase 6), backtesting
-  (Phase 7), trade-lifecycle (Phase 8), NAV/attribution (Phase 9) and paper-execution
-  (Phase 10) endpoints - but no *real* broker, and live trading is disabled by
-  default and stays that way until an actual live broker is built and explicitly
-  enabled with human sign-off.
+  (Phase 7), trade-lifecycle (Phase 8), NAV/attribution (Phase 9), paper-execution
+  (Phase 10) and ML-research (Phase 11) endpoints - but no *real* broker, and live
+  trading is disabled by default and stays that way until an actual live broker is
+  built and explicitly enabled with human sign-off.
 - The dashboard has price/macro/regime/signals/portfolio/risk/backtest/trade-journal/
-  performance browsers + system status, not the full 8-page CIO dashboard described
-  in the platform spec - some of it (Positions specifically) still needs a real
-  `Position` table (see below).
+  performance/ML-research browsers + system status, not the full 8-page CIO
+  dashboard described in the platform spec - some of it (Positions specifically)
+  still needs a real `Position` table (see below).
+- The Phase 11 ML layer is research-only: nothing feeds a trained model's
+  predictions into the composite score, `run_backtest`, or trade ideas - building
+  and evaluating candidate models is as far as this phase goes. Its features also
+  inherit the composite score's own known proxy limitations (see "Signal engine"
+  above) - a model trained on `positioning_score` is a model trained on an
+  RSI-based crowding proxy, not real CFTC positioning data, whatever the model
+  itself does with it. It has only been evaluated against this platform's synthetic
+  price/macro history, never real market history.
 - The `Position` table still isn't written to - `PaperBroker` fills orders and
   `jlmacro.execution.service` updates the `Trade` row's price/status, but nothing
   aggregates that into a `Position` (net quantity/average price per instrument);
@@ -861,19 +928,24 @@ immediately benefit from broader real (non-synthetic) coverage across the 6 coun
 and a real market-data vendor would very likely also carry real earnings/fundamentals
 data that could replace the signal engine's equity valuation proxy.
 
-Phase 11 next: the ML research layer (logistic/elastic-net/random-forest/gradient-
-boosted models with walk-forward validation against a baseline) - the first place in
-this platform anything is actually *fitted*, as opposed to the rule-based engines
-built so far. Worth doing before or alongside it: actually wiring
+Phase 12 next: production hardening and a final review pass across everything built
+so far (full lint/type/test sweep, a README pass for accuracy, a security review of
+the whole platform) - the spec's explicit closing phase, not a new engine.
+
+Worth doing alongside or shortly after it, roughly in order of how directly each
+closes a loop already flagged above: actually wiring
 `jlmacro.nav.engine.current_drawdown` into
 `jlmacro.risk.drawdown.risk_budget_fraction_for_drawdown` (and that, in turn, into
 the Phase 8 lifecycle's `APPROVED`/`OPEN` transitions, now that Phase 10 gives it
 somewhere real to check before an order actually goes out) would close the loop the
-risk engine has been waiting on since Phase 6. Writing `Position` rows on fill
+risk engine has been waiting on since Phase 6; writing `Position` rows on fill
 (`jlmacro.execution.service`) is the natural next step once something needs
-aggregate net holdings. Widening `jlmacro.risk.stress`'s hypothetical-shock mapping
-(a credit-spread/CDS proxy, an equity-vol-percentile proxy) and sourcing real
-historical prices so `apply_historical_scenario` can actually replay 2008/2020/etc. -
-and modelling transaction costs/slippage in `jlmacro.backtest.engine` - would also
-directly improve Phases 6 and 7 respectively, whenever a real market-data vendor is
-wired in (still Phase 2's remaining item, below).
+aggregate net holdings; and evaluating the Phase 11 ML layer against real
+(non-synthetic) market history, once a real market-data vendor exists, would be the
+first real test of whether any of its candidate models actually beat the baseline
+out of sample. Widening `jlmacro.risk.stress`'s hypothetical-shock mapping (a
+credit-spread/CDS proxy, an equity-vol-percentile proxy) and sourcing real historical
+prices so `apply_historical_scenario` can actually replay 2008/2020/etc. - and
+modelling transaction costs/slippage in `jlmacro.backtest.engine` - would also
+directly improve Phases 6 and 7 respectively, whenever that real market-data vendor
+is wired in (still Phase 2's remaining item, below).

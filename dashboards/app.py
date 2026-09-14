@@ -29,6 +29,9 @@ from jlmacro.execution.paper_broker import PaperBroker
 from jlmacro.execution.service import close_trade_via_broker, open_trade_via_broker
 from jlmacro.models.enums import TradeDirection, TradeStatus
 from jlmacro.models.instrument import Instrument
+from jlmacro.models.ml.evaluation import compare_models
+from jlmacro.models.ml.features import build_feature_dataset
+from jlmacro.models.ml.models import MODEL_FACTORIES
 from jlmacro.models.portfolio import Portfolio, Trade
 from jlmacro.models.signals import compute_investment_score
 from jlmacro.nav.engine import drawdown_series, high_water_mark_series, nav_history
@@ -111,6 +114,7 @@ if instruments_df.empty:
     tab_backtest,
     tab_journal,
     tab_performance,
+    tab_ml,
     tab_universe,
 ) = st.tabs(
     [
@@ -123,6 +127,7 @@ if instruments_df.empty:
         "Backtest",
         "Trade Journal",
         "Performance",
+        "ML Research",
         "Asset Universe",
     ]
 )
@@ -1150,6 +1155,116 @@ with tab_performance:
             fig.update_layout(title=f"P&L attribution by {attribution_group_by}", height=360)
             st.plotly_chart(fig, width="stretch")
             st.dataframe(attribution_df.to_frame().style.format("{:,.0f}"), width="stretch")
+
+with tab_ml:
+    st.subheader("ML research layer")
+    st.caption(
+        "Features are the Phase 4 composite score's own five components (already "
+        "point-in-time correct); the label is the sign of the forward return over a "
+        "chosen horizon. Walk-forward validated (chronological splits, never "
+        "shuffled) against a majority-class baseline. Expensive - one investment-"
+        "score computation per symbol per date - keep the selections modest."
+    )
+
+    ml_col1, ml_col2, ml_col3 = st.columns(3)
+    ml_symbols = ml_col1.multiselect(
+        "Instruments",
+        sorted(instruments_df["symbol"].unique()),
+        default=[
+            s
+            for s in ["SPX", "NDX", "US10Y", "XAU", "EURUSD"]
+            if s in instruments_df["symbol"].values
+        ],
+        key="ml_symbols",
+    )
+    ml_horizon = ml_col2.number_input(
+        "Forward-return horizon (days)", min_value=5, max_value=90, value=21, key="ml_horizon"
+    )
+    ml_n_splits = ml_col3.number_input(
+        "Walk-forward splits", min_value=2, max_value=10, value=4, key="ml_n_splits"
+    )
+
+    ml_start = st.date_input("Dates from", value=dt.date(2025, 1, 1), key="ml_start")
+    ml_num_dates = st.slider(
+        "Number of sample dates (spaced by the horizon)",
+        min_value=6,
+        max_value=60,
+        value=20,
+        key="ml_num_dates",
+    )
+    ml_model_names = st.multiselect(
+        "Models",
+        list(MODEL_FACTORIES.keys()),
+        default=["logistic", "random_forest", "gradient_boosting"],
+        key="ml_model_names",
+    )
+
+    if len(ml_symbols) < 1 or not ml_model_names:
+        st.info("Select at least one instrument and one model.")
+    elif st.button("Run walk-forward evaluation", key="ml_run_button"):
+        with st.spinner("Building features and walk-forward validating..."):
+            ml_dates = [
+                ml_start + dt.timedelta(days=int(ml_horizon) * i) for i in range(int(ml_num_dates))
+            ]
+            with session_scope() as session:
+                ml_dataset = build_feature_dataset(
+                    session, ml_symbols, ml_dates, horizon_days=int(ml_horizon)
+                )
+
+        if ml_dataset.empty:
+            st.warning(
+                "No feature/label rows could be built - check that a RegimeSnapshot "
+                "exists for the relevant countries and that price history extends "
+                "past the forward-return horizon."
+            )
+        else:
+            st.caption(f"{len(ml_dataset)} feature/label rows built.")
+            try:
+                ml_results = compare_models(ml_dataset, ml_model_names, n_splits=int(ml_n_splits))
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                summary_df = pd.DataFrame(
+                    [
+                        {
+                            "model": name,
+                            "mean model accuracy": r.mean_model_accuracy,
+                            "mean baseline accuracy": r.mean_baseline_accuracy,
+                            "beats baseline": r.beats_baseline,
+                            "mean AUC": r.mean_model_auc,
+                        }
+                        for name, r in ml_results.items()
+                    ]
+                ).set_index("model")
+                st.dataframe(
+                    summary_df.style.format(
+                        {
+                            "mean model accuracy": "{:.1%}",
+                            "mean baseline accuracy": "{:.1%}",
+                            "mean AUC": "{:.3f}",
+                        },
+                        na_rep="n/a",
+                    ),
+                    width="stretch",
+                )
+
+                fig = go.Figure()
+                fig.add_trace(
+                    go.Bar(x=summary_df.index, y=summary_df["mean model accuracy"], name="Model")
+                )
+                fig.add_trace(
+                    go.Bar(
+                        x=summary_df.index,
+                        y=summary_df["mean baseline accuracy"],
+                        name="Baseline (majority class)",
+                    )
+                )
+                fig.update_layout(
+                    title="Walk-forward mean accuracy vs. baseline",
+                    yaxis_tickformat=".0%",
+                    height=380,
+                )
+                st.plotly_chart(fig, width="stretch")
 
 with tab_universe:
     st.subheader("Configured asset universe")

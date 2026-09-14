@@ -20,6 +20,7 @@ from jlmacro.api.routers import (
     instruments,
     macro_data,
     market_data,
+    ml,
     nav,
     portfolio,
     regime,
@@ -51,6 +52,7 @@ app.include_router(risk.router)
 app.include_router(backtest.router)
 app.include_router(trades.router)
 app.include_router(nav.router)
+app.include_router(ml.router)
 
 
 @app.get("/")
