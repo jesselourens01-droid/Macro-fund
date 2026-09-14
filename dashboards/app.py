@@ -20,6 +20,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import select
 
+from jlmacro.attribution.pnl import compute_pnl_attribution
 from jlmacro.backtest.engine import run_backtest
 from jlmacro.backtest.monte_carlo import bootstrap_terminal_nav
 from jlmacro.config import get_settings, load_yaml_config
@@ -28,6 +29,8 @@ from jlmacro.models.enums import TradeDirection, TradeStatus
 from jlmacro.models.instrument import Instrument
 from jlmacro.models.portfolio import Portfolio, Trade
 from jlmacro.models.signals import compute_investment_score
+from jlmacro.nav.engine import drawdown_series, high_water_mark_series, nav_history
+from jlmacro.nav.fees import compute_performance_fee, fees_config
 from jlmacro.portfolio.construction import (
     equal_risk_contribution_weights,
     inverse_volatility_weights,
@@ -105,6 +108,7 @@ if instruments_df.empty:
     tab_risk,
     tab_backtest,
     tab_journal,
+    tab_performance,
     tab_universe,
 ) = st.tabs(
     [
@@ -116,6 +120,7 @@ if instruments_df.empty:
         "Risk",
         "Backtest",
         "Trade Journal",
+        "Performance",
         "Asset Universe",
     ]
 )
@@ -1007,6 +1012,91 @@ with tab_journal:
                         )
                         review = generate_post_trade_review(session, trade_for_review)
                     st.write(review)
+
+with tab_performance:
+    st.subheader("Performance: NAV, drawdown, attribution")
+    st.caption(
+        "Computed on demand from this portfolio's Trade rows (Phase 8) - never a "
+        "separately-maintained ledger. Realised P&L uses each trade's recorded exit "
+        "price; unrealised P&L marks open trades to the latest point-in-time close."
+    )
+
+    with session_scope() as session:
+        perf_portfolios = list(session.scalars(select(Portfolio).order_by(Portfolio.name)))
+
+    if not perf_portfolios:
+        st.info("No portfolios yet - create one in the Trade Journal tab.")
+    else:
+        pcol1, pcol2, pcol3 = st.columns(3)
+        perf_portfolio = pcol1.selectbox(
+            "Portfolio", perf_portfolios, format_func=lambda p: p.name, key="perf_portfolio"
+        )
+        perf_start = pcol2.date_input(
+            "Start",
+            value=dt.date.fromisoformat(load_yaml_config("settings")["fund"]["inception_date"]),
+            key="perf_start",
+        )
+        perf_as_of = pcol3.date_input(
+            "As of", value=dt.datetime.now(tz=dt.UTC).date(), key="perf_as_of"
+        )
+
+        fees = fees_config()
+        with session_scope() as session:
+            series = nav_history(
+                session,
+                perf_portfolio.id,
+                start=perf_start,
+                end=perf_as_of,
+                starting_capital=fees["starting_capital"],
+            )
+        hwm_series = high_water_mark_series(series)
+        dd_series = drawdown_series(series)
+        nav_gross = float(series.iloc[-1])
+        hwm = float(hwm_series.iloc[-1])
+        fee_result = compute_performance_fee(
+            nav_gross, hwm, performance_fee_pct=fees["performance_fee_pct"]
+        )
+
+        mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+        mcol1.metric("NAV (gross)", f"{nav_gross:,.0f}")
+        mcol2.metric("High-water mark", f"{hwm:,.0f}")
+        mcol3.metric("Drawdown", f"{float(dd_series.iloc[-1]):.2%}")
+        mcol4.metric("Performance fee accrued", f"{fee_result.performance_fee_accrued:,.0f}")
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=series.index, y=series.values, mode="lines", name="NAV"))
+        fig.add_trace(
+            go.Scatter(
+                x=hwm_series.index, y=hwm_series.values, mode="lines", name="High-water mark"
+            )
+        )
+        fig.update_layout(title="NAV vs high-water mark", height=380)
+        st.plotly_chart(fig, width="stretch")
+
+        fig = go.Figure(
+            go.Scatter(x=dd_series.index, y=dd_series.values, mode="lines", fill="tozeroy")
+        )
+        fig.update_layout(title="Drawdown from high-water mark", height=280, yaxis_tickformat=".0%")
+        st.plotly_chart(fig, width="stretch")
+
+        st.divider()
+        st.subheader("P&L attribution")
+        attribution_group_by = st.selectbox(
+            "Group by", ["symbol", "asset_class", "direction"], key="perf_attribution_group_by"
+        )
+        with session_scope() as session:
+            attribution = compute_pnl_attribution(
+                session, perf_portfolio.id, as_of=perf_as_of, group_by=attribution_group_by
+            )
+
+        if not attribution:
+            st.info("No trades have contributed P&L yet for this portfolio/date.")
+        else:
+            attribution_df = pd.Series(attribution, name="pnl").sort_values(ascending=False)
+            fig = go.Figure(go.Bar(x=attribution_df.index, y=attribution_df.values))
+            fig.update_layout(title=f"P&L attribution by {attribution_group_by}", height=360)
+            st.plotly_chart(fig, width="stretch")
+            st.dataframe(attribution_df.to_frame().style.format("{:,.0f}"), width="stretch")
 
 with tab_universe:
     st.subheader("Configured asset universe")

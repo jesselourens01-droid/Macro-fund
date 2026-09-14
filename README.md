@@ -8,7 +8,7 @@ portfolio management, risk management and decision support.
 broker-specific safeguards before any order can be transmitted.** See
 `jlmacro.config.Settings.jlmacro_live_trading_enabled` and `src/jlmacro/execution/`.
 
-## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1) + Phase 7 (v1) + Phase 8 (v1)
+## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1) + Phase 7 (v1) + Phase 8 (v1) + Phase 9 (v1)
 
 **Phase 1** (complete):
 
@@ -162,6 +162,27 @@ lifecycle" below):
   `GET /trades`, `/trades/{id}`, `/trades/{id}/memo`, `/trades/{id}/review` (plus a
   minimal `/portfolios`) API endpoints, and a "Trade Journal" dashboard tab.
 
+**Phase 9** (NAV engine, attribution, performance fees, v1; see "NAV, attribution and
+fees" below):
+
+- NAV engine (`jlmacro.nav.engine`): NAV computed on demand as `starting_capital +
+  sum of every Trade's P&L as of a date` - realised P&L from a closed trade's
+  recorded exit price, unrealised P&L from marking an open trade to the latest
+  point-in-time close - never a separately-maintained ledger, the same "recompute
+  from source" discipline `jlmacro.trades.memo` uses. This is what finally gives
+  Phase 6's drawdown governor a real `current_drawdown` instead of one supplied by
+  hand.
+- Performance fees (`...nav.fees`): the standard high-water-mark model -
+  `config/fees.yaml`'s `performance_fee_pct` crystallises only on NAV strictly above
+  the fund's own all-time high.
+- P&L attribution (`jlmacro.attribution.pnl`): the same per-trade P&L bucketed by
+  symbol, asset class, or direction - a breakdown of the same total NAV computation
+  produces, never a separately-computed figure that could disagree with it.
+- `GET /nav`, `/nav/history`, `/nav/attribution` API endpoints, and a "Performance"
+  dashboard tab (NAV vs. high-water mark, drawdown, P&L attribution).
+- This is P&L attribution only (which positions made or lost money) - decomposing
+  *why* within a position (macro call vs. entry timing vs. noise) is future work.
+
 See `docs/` and the phase list in the original platform specification for what comes
 next. Do not build later phases until this one is reviewed.
 
@@ -186,8 +207,11 @@ src/jlmacro/
   backtest/      Event-driven backtest, walk-forward validation, Monte Carlo (Phase 7).
   trades/        Trade lifecycle state machine, investment memos, post-trade review
                  (Phase 8) - the layer that persists a jlmacro.models.portfolio.Trade.
-  execution/, attribution/, reporting/, compliance/
-                 Package placeholders for Phase 9+ - deliberately near-empty for now.
+  nav/           NAV, high-water mark, drawdown and performance fees (Phase 9),
+                 computed on demand from Trade rows.
+  attribution/   P&L attribution by symbol/asset class/direction (Phase 9).
+  execution/, reporting/, compliance/
+                 Package placeholders for Phase 10+ - deliberately near-empty for now.
   utils/         Structured logging, ID generation, audit logging.
 dashboards/      Streamlit app (presentation layer only - no business logic).
 scripts/         Operational scripts (synthetic data generator).
@@ -309,6 +333,9 @@ Nothing about the fund's business rules is hard-coded:
   tuning; deliberately separate from `risk_limits.yaml` since these are implementation
   details, not fund risk policy (Phase 5+).
 - `config/scenarios.yaml` - historical and hypothetical stress scenarios (Phase 6+).
+- `config/fees.yaml` - starting capital and the performance fee rate (Phase 9+) -
+  fund business policy, the same reasoning that keeps it separate from
+  `jlmacro.nav`'s own implementation.
 - `config/settings.yaml` - general platform/fund settings.
 - `.env` (never committed) - environment-specific secrets and connection details only.
 
@@ -643,6 +670,40 @@ curl "http://localhost:8000/trades/<trade_id>/review"
   real, auditable, and the first genuine input Phase 9's NAV engine and Phase 10's
   paper broker will have to work with.
 
+## NAV, attribution and fees (Phase 9)
+
+```bash
+curl "http://localhost:8000/nav?portfolio_id=1"
+curl "http://localhost:8000/nav/history?portfolio_id=1&frequency_days=7"
+curl "http://localhost:8000/nav/attribution?portfolio_id=1&group_by=asset_class"
+```
+
+- **NAV** (`jlmacro.nav.engine`) is computed on demand, never from a persisted daily
+  ledger: `compute_nav` = `starting_capital` (`config/fees.yaml`) + the sum of every
+  `Trade`'s P&L as of a date. A trade contributes nothing until it has actually
+  reached `OPEN` (read from its own `extra["lifecycle_history"]`); a closed trade's
+  P&L uses its recorded `exit_price` (never drifts with the market after the fact);
+  an open trade is marked to market using the latest point-in-time close. This
+  mirrors `jlmacro.trades.memo`'s "recompute from source, never a second copy"
+  discipline, so NAV can be recomputed for any historical `as_of` from the `Trade`
+  rows alone.
+- `nav_history`/`high_water_mark_series`/`drawdown_series` build a NAV curve over a
+  date range and its running high-water mark and drawdown - and `current_drawdown`
+  feeds that real number directly into Phase 6's
+  `jlmacro.risk.drawdown.risk_budget_fraction_for_drawdown`, which previously only
+  had a manually-supplied figure to work with.
+- **Performance fees** (`...nav.fees.compute_performance_fee`) use the standard
+  high-water-mark model: `config/fees.yaml`'s `performance_fee_pct` crystallises only
+  on the portion of NAV strictly above the fund's own all-time high - never on a
+  recovery back towards a previous high.
+- **P&L attribution** (`jlmacro.attribution.pnl.compute_pnl_attribution`) buckets the
+  exact same per-trade P&L `compute_nav` sums by symbol, asset class, or direction -
+  a breakdown of the same total, never a separately-computed figure that could
+  disagree with it. This is P&L attribution only (which positions made or lost
+  money); decomposing *why* within one position (macro call vs. entry timing vs.
+  noise, as `jlmacro.trades.review`'s docstring flags as still missing) needs more
+  closed-trade history than this platform has generated yet.
+
 ## Known limitations
 
 - Market-data providers (a real price vendor) and ECB/BoE/BoJ/World Bank/IMF macro
@@ -651,20 +712,23 @@ curl "http://localhost:8000/trades/<trade_id>/review"
   against live data end to end (see "Real data adapters" above for which are
   documentation-verified vs. best-guess) - do a live run before relying on them.
   ABS's GDP indicator has no mapping at all yet (data key not confirmed).
-- The API has portfolio-construction (Phase 5), risk (Phase 6), backtesting (Phase 7)
-  and trade-lifecycle (Phase 8) endpoints, but no execution endpoints yet, and
-  nothing here can place a real order - that lands in Phase 10's paper broker.
-- The dashboard has price/macro/regime/signals/portfolio/risk/backtest/trade-journal
-  browsers + system status, not the full 8-page CIO dashboard described in the
-  platform spec - that requires the attribution/reporting layers built in later
-  phases.
-- Phase 8's `Position` table still isn't written to - opening a `Trade` doesn't yet
-  update a `Position` row (quantity/average price), since nothing has needed
-  aggregate position-level state until now. That wiring is natural Phase 9/10 work,
-  once there's a NAV engine and a paper broker actually filling orders.
-- Phase 8's post-trade review compares realised return direction to the entry-time
-  composite score only - it doesn't yet decompose *why* a trade won or lost (macro
-  call vs. entry timing vs. noise); that's Phase 9's attribution engine's job.
+- The API has portfolio-construction (Phase 5), risk (Phase 6), backtesting
+  (Phase 7), trade-lifecycle (Phase 8) and NAV/attribution (Phase 9) endpoints, but
+  no execution endpoints yet, and nothing here can place a real order - that lands
+  in Phase 10's paper broker.
+- The dashboard has price/macro/regime/signals/portfolio/risk/backtest/trade-journal/
+  performance browsers + system status, not the full 8-page CIO dashboard described
+  in the platform spec - some of it (Positions specifically) still needs a real
+  `Position` table (see below).
+- The `Position` table still isn't written to - opening a `Trade` doesn't update a
+  `Position` row (quantity/average price); NAV (Phase 9) is computed straight from
+  `Trade` rows instead, sidestepping the need for one so far. Writing to `Position`
+  is natural Phase 10 work once a paper broker is actually filling orders and needs
+  somewhere to track net holdings per instrument.
+- Phase 9's P&L attribution is P&L-only (which positions made or lost money) -
+  decomposing *why* within one position (macro call vs. entry timing vs. noise, as
+  `jlmacro.trades.review`'s docstring flags) needs more closed-trade history than
+  this platform has generated yet, and isn't attempted.
 - `run_backtest` (Phase 7) doesn't model transaction costs, slippage, financing, or
   intra-period rebalancing, and its `_decide_weights` recomputes the Phase 4
   composite score for every symbol at every rebalance date - fine for the modest
@@ -672,16 +736,16 @@ curl "http://localhost:8000/trades/<trade_id>/review"
   or a long, finely-rebalanced backtest. Walk-forward validation (Phase 7) checks
   consistency across historical windows, not out-of-sample generalisation of a
   fitted model - there's nothing fitted to generalise until Phase 11's ML layer.
-- `Portfolio` and `Trade` are now populated (Phase 8) - but `Position` still isn't
-  (see above), and Phase 5/6's weights/sizes/risk numbers remain computed on demand
-  and returned, never automatically persisted into a `Trade` - Phase 8's
-  `create_trade_idea` takes them as explicit arguments; nothing wires Phase 5's
-  output into it automatically yet.
-- The risk engine (Phase 6) computes numbers on demand but doesn't automatically cut
-  anything - there is still no NAV history to compute a real drawdown from (Phase 9);
-  `GET /risk/drawdown` takes a `current_drawdown` you supply, not one it derives
-  itself. It also isn't wired to the Phase 8 lifecycle - nothing stops a trade from
-  being approved/opened regardless of what the risk engine would say about it.
+- Phase 5/6's weights/sizes/risk numbers remain computed on demand and returned,
+  never automatically persisted into a `Trade` - `create_trade_idea` takes them as
+  explicit arguments; nothing wires Phase 5's output into it automatically yet.
+- The risk engine (Phase 6) can now be given a *real* drawdown
+  (`jlmacro.nav.engine.current_drawdown`, Phase 9) instead of a manually-supplied
+  one, but nothing actually calls it that way yet - `GET /risk/drawdown` still takes
+  whatever `current_drawdown` the caller passes, and nothing stops a trade from
+  being approved/opened regardless of what the risk engine would say about it. Wiring
+  those two together (and computing `nav_history` more efficiently than one
+  point-in-time query per open trade per day) is natural next work.
 - `apply_hypothetical_scenario` (`jlmacro.risk.stress`) only maps 6 of the ~9 distinct
   shock keys used across `config/scenarios.yaml`'s hypothetical scenarios onto actual
   instruments (equity_indices, rates_bp, usd_index, audusd, oil, gold) - the rest
@@ -725,15 +789,17 @@ immediately benefit from broader real (non-synthetic) coverage across the 6 coun
 and a real market-data vendor would very likely also carry real earnings/fundamentals
 data that could replace the signal engine's equity valuation proxy.
 
-Phase 9 next: the NAV engine (high-water mark, performance fees), attribution, and
-the remaining CIO dashboard pages - the layer that finally gives Phase 6's drawdown
-governor a real `current_drawdown` to read instead of a manually-supplied one, and
-gives Phase 8's post-trade review something better than "did the score's direction
-turn out right" to say about a closed trade. Wiring Phase 8's `Trade` rows into an
-actual `Position` (quantity/average price, updated on open/reduce/close) is natural
-groundwork for that same phase. Widening `jlmacro.risk.stress`'s hypothetical-shock
-mapping (a credit-spread/CDS proxy, an equity-vol-percentile proxy) and sourcing real
-historical prices so `apply_historical_scenario` can actually replay 2008/2020/etc. -
-and modelling transaction costs/slippage in `jlmacro.backtest.engine` - would also
-directly improve Phases 6 and 7 respectively, whenever a real market-data vendor is
-wired in (still Phase 2's remaining item, below).
+Phase 10 next: paper trading and the broker abstraction (`BaseBroker`/`PaperBroker`) -
+the layer that finally fills an order and needs somewhere to track net holdings,
+which is the natural moment to start writing to the still-empty `Position` table.
+Actually wiring `jlmacro.nav.engine.current_drawdown` into
+`jlmacro.risk.drawdown.risk_budget_fraction_for_drawdown` (and that, in turn, into
+the Phase 8 lifecycle's `APPROVED`/`OPEN` transitions) would close the loop the risk
+engine has been waiting on since Phase 6 - worth doing alongside or just before
+Phase 10, since a paper broker is exactly where that gate matters. Widening
+`jlmacro.risk.stress`'s hypothetical-shock mapping (a credit-spread/CDS proxy, an
+equity-vol-percentile proxy) and sourcing real historical prices so
+`apply_historical_scenario` can actually replay 2008/2020/etc. - and modelling
+transaction costs/slippage in `jlmacro.backtest.engine` - would also directly improve
+Phases 6 and 7 respectively, whenever a real market-data vendor is wired in (still
+Phase 2's remaining item, below).

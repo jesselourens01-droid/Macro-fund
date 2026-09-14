@@ -1,0 +1,10 @@
+# Fund fee policy (src/jlmacro/nav/fees.py) and NAV engine starting parameters
+# (src/jlmacro/nav/engine.py). Business policy, not implementation detail - the same
+# reasoning that keeps this separate from src/jlmacro/portfolio's covariance/
+# construction tuning in config/portfolio.yaml.
+
+starting_capital: 10000000.0  # AUD, matches config/settings.yaml's fund.base_currency
+
+# Standard high-water-mark model: crystallises only on NAV strictly above the fund's
+# own all-time high, never on a recovery towards a previous high.
+performance_fee_pct: 0.15

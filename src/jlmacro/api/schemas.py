@@ -379,6 +379,33 @@ class PostTradeReviewOut(BaseModel):
     notes: str
 
 
+class NAVOut(BaseModel):
+    portfolio_id: int
+    as_of: dt.date
+    start: dt.date
+    starting_capital: float
+    nav_gross: float
+    high_water_mark: float
+    drawdown: float
+    performance_fee_accrued: float
+    nav_net: float
+
+
+class NAVHistoryOut(BaseModel):
+    portfolio_id: int
+    start: dt.date
+    end: dt.date
+    starting_capital: float
+    nav: dict[str, float]  # ISO date -> NAV
+
+
+class AttributionOut(BaseModel):
+    portfolio_id: int
+    as_of: dt.date
+    group_by: str
+    breakdown: dict[str, float]
+
+
 class HealthOut(BaseModel):
     status: str
     environment: str
