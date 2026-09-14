@@ -96,6 +96,54 @@ class InvestmentScoreOut(BaseModel):
     detail: dict[str, object]
 
 
+class CovarianceOut(BaseModel):
+    symbols: list[str]
+    as_of: dt.date
+    method: str
+    annualised_volatility: dict[str, float]
+    covariance: dict[str, dict[str, float]]  # row symbol -> {column symbol -> value}
+
+
+class PortfolioWeightsOut(BaseModel):
+    symbols: list[str]
+    as_of: dt.date
+    method: str
+    target_volatility: float
+    gross_leverage: float
+    portfolio_volatility: float
+    weights: dict[str, float]
+    risk_contributions: dict[str, float]  # fraction of portfolio variance, sums to 1
+
+
+class PositionSizeOut(BaseModel):
+    symbol: str
+    as_of: dt.date
+    direction: int
+    risk_units: float
+    risk_pct_nav: float
+    stop_distance_pct: float | None
+    risk_budget: float
+    notional: float | None
+    price: float | None
+
+
+class ExposureRequest(BaseModel):
+    weights: dict[str, float]  # symbol -> signed weight (fraction of NAV)
+    as_of: dt.date
+    covariance_method: str = "ledoit_wolf"
+
+
+class ExposureOut(BaseModel):
+    gross: float
+    net: float
+    by_asset_class: dict[str, float]
+    by_country: dict[str, float]
+    by_currency: dict[str, float]
+    marginal_contribution_to_risk: dict[str, float]
+    component_contribution_to_risk: dict[str, float]
+    portfolio_volatility: float
+
+
 class HealthOut(BaseModel):
     status: str
     environment: str

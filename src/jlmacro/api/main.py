@@ -2,16 +2,25 @@
 
 Phase 1/2 exposes read-only endpoints over the seeded instrument universe and PIT
 market/macro data; Phase 3 adds computed macro regime snapshots; Phase 4 adds the
-quantitative signal engine (trend/valuation/positioning/catalyst/composite score) -
-so the dashboard (and future integrations) have something real to consume. Portfolio/
-risk/execution endpoints are added in later phases behind the same app.
+quantitative signal engine (trend/valuation/positioning/catalyst/composite score);
+Phase 5 adds portfolio construction (covariance, weighting, position sizing,
+exposures) - so the dashboard (and future integrations) have something real to
+consume. Risk/execution endpoints are added in later phases behind the same app.
 """
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 
-from jlmacro.api.routers import health, instruments, macro_data, market_data, regime, signals
+from jlmacro.api.routers import (
+    health,
+    instruments,
+    macro_data,
+    market_data,
+    portfolio,
+    regime,
+    signals,
+)
 from jlmacro.config import get_settings
 from jlmacro.utils.logging import configure_logging
 
@@ -31,6 +40,7 @@ app.include_router(market_data.router)
 app.include_router(macro_data.router)
 app.include_router(regime.router)
 app.include_router(signals.router)
+app.include_router(portfolio.router)
 
 
 @app.get("/")

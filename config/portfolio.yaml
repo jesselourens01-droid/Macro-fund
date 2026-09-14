@@ -1,0 +1,19 @@
+# Portfolio construction / covariance parameters (src/jlmacro/portfolio/). Target
+# volatility and per-trade/theme/country risk caps already live in
+# config/risk_limits.yaml (fund risk policy); this file holds construction-method
+# tuning that is squarely an implementation detail, not risk policy.
+
+covariance:
+  window_days: 500  # trailing calendar-day window of point-in-time daily returns
+  min_observations: 60
+  ewma_halflife_days: 60
+
+construction:
+  # "equal_risk_contribution" (each position contributes equally to portfolio
+  # variance) or "inverse_volatility" (weight inversely proportional to each
+  # instrument's own vol, ignoring correlation) - equal_risk_contribution is the
+  # platform spec's more sophisticated default; inverse_volatility is the simpler
+  # fallback it also asks for.
+  default_method: equal_risk_contribution
+  max_iterations: 500
+  convergence_tolerance: 1.0e-8

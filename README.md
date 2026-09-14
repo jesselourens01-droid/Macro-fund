@@ -8,7 +8,7 @@ portfolio management, risk management and decision support.
 broker-specific safeguards before any order can be transmitted.** See
 `jlmacro.config.Settings.jlmacro_live_trading_enabled` and `src/jlmacro/execution/`.
 
-## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1)
+## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1)
 
 **Phase 1** (complete):
 
@@ -73,6 +73,30 @@ supports them, honestly-documented proxies elsewhere; see "Signal engine" below)
 - `GET /signals`, `/signals/{symbol}` API endpoints, and a "Signals" dashboard tab
   (the platform spec's Page 5 "highest-ranking opportunities" view)
 
+**Phase 5** (portfolio construction, v1 - covariance, weighting and sizing; see
+"Portfolio construction" below):
+
+- Covariance (`jlmacro.portfolio.covariance`): point-in-time daily returns (reusing
+  the same PIT primitive as the signal engine) plus sample / EWMA / Ledoit-Wolf
+  shrinkage covariance estimation and annualised volatility
+- Sizing (`...portfolio.sizing`): `risk_budget = NAV x allowed_risk_percentage`
+  (`config/risk_limits.yaml`'s existing `position_risk`, keyed by the Phase 4
+  composite score's risk-unit band) / ATR-based stop distance
+- Construction (`...portfolio.construction`): inverse-volatility and
+  equal-risk-contribution weighting (the latter via Spinu's convex log-barrier
+  formulation, solved with `cvxpy`), scaled to the fund's target volatility
+  (`config/risk_limits.yaml`'s `target_volatility`)
+- Exposures (`...portfolio.exposures`): gross/net exposure and asset-class/country/
+  currency breakdowns from `Instrument`'s own fields, plus marginal/component
+  contribution to risk (CCR sums exactly to total portfolio volatility - the correct
+  answer to "where does our risk come from," which raw weight is not once correlation
+  matters)
+- `GET /portfolio/covariance`, `/portfolio/weights`, `/portfolio/sizing/{symbol}` and
+  `POST /portfolio/exposures` API endpoints, and a "Portfolio" dashboard tab
+- None of this persists a position or enforces `config/risk_limits.yaml`'s
+  concentration/drawdown limits - it produces the numbers Phase 6's risk engine will
+  check those limits against, and Phase 8's trade lifecycle will eventually persist
+
 See `docs/` and the phase list in the original platform specification for what comes
 next. Do not build later phases until this one is reviewed.
 
@@ -92,8 +116,9 @@ src/jlmacro/
                  macro regime engine (Phase 3); models/signals holds the quantitative
                  signal engine - trend/valuation/positioning/catalyst/composite
                  (Phase 4); models/ml holds the future ML research layer.
-  portfolio/, risk/, execution/, backtest/, attribution/, reporting/, compliance/
-                 Package placeholders for Phase 5+ - deliberately near-empty for now.
+  portfolio/     Covariance, position sizing, weighting and exposures (Phase 5).
+  risk/, execution/, backtest/, attribution/, reporting/, compliance/
+                 Package placeholders for Phase 6+ - deliberately near-empty for now.
   utils/         Structured logging, ID generation, audit logging.
 dashboards/      Streamlit app (presentation layer only - no business logic).
 scripts/         Operational scripts (synthetic data generator).
@@ -203,10 +228,17 @@ Nothing about the fund's business rules is hard-coded:
   `scripts/generate_synthetic_data.py` (and later, real data ingestion) picks it up
   automatically.
 - `config/risk_limits.yaml` - volatility targets, position/theme/country risk limits,
-  the drawdown governor's schedule, and investment-score thresholds. Read (but not yet
-  enforced) starting Phase 1; enforcement is wired in Phase 5/6.
+  the drawdown governor's schedule, and investment-score thresholds. Read since Phase 1;
+  `target_volatility`/`position_risk` are now actually used (Phase 5's sizing/
+  construction); `concentration_limits`/the drawdown governor are still read-only and
+  will be enforced by Phase 6's risk engine.
 - `config/macro_indicators.yaml` - which countries/indicators the macro regime engine
   will track (Phase 3+).
+- `config/signals.yaml` - signal-engine parameters (lookback windows, weights, proxy
+  tuning) - see "Signal engine" below (Phase 4+).
+- `config/portfolio.yaml` - covariance window/half-life and construction-method
+  tuning; deliberately separate from `risk_limits.yaml` since these are implementation
+  details, not fund risk policy (Phase 5+).
 - `config/scenarios.yaml` - historical and hypothetical stress scenarios (Phase 6+).
 - `config/settings.yaml` - general platform/fund settings.
 - `.env` (never committed) - environment-specific secrets and connection details only.
@@ -365,8 +397,56 @@ curl "http://localhost:8000/signals?asset_class=fx" # ranked list, filterable
   zero) - see `tests/unit/test_signals_composite.py` for exactly what that means.
   `suggested_risk_units` (0 / 0 / 0.5 / 1 / 1.5, from the composite's score band) is
   **advisory only**: per the platform spec, "the system must never allow score alone to
-  override portfolio-risk limits," and the risk engine that would actually enforce that
-  doesn't exist yet (Phase 5+).
+  override portfolio-risk limits." Phase 5's sizing/construction consumes it as an
+  input, but the risk engine with actual override authority still doesn't exist yet
+  (Phase 6).
+
+## Portfolio construction (Phase 5)
+
+```bash
+curl "http://localhost:8000/portfolio/covariance?symbols=SPX,US10Y,XAU,EURUSD&as_of=2026-08-31"
+curl "http://localhost:8000/portfolio/weights?symbols=SPX,US10Y,XAU,EURUSD&weighting_method=equal_risk_contribution"
+curl "http://localhost:8000/portfolio/sizing/SPX?nav=10000000&risk_units=1.0&direction=1"
+curl -X POST "http://localhost:8000/portfolio/exposures" \
+  -H "Content-Type: application/json" \
+  -d '{"weights": {"SPX": 0.3, "US10Y": -0.2}, "as_of": "2026-08-31"}'
+```
+
+- **Covariance** (`jlmacro.portfolio.covariance.returns_matrix`) computes daily
+  returns point-in-time (never forward-filled - a missing overlap day is dropped from
+  every symbol via an inner join, rather than fabricating a return), then
+  `sample_covariance` / `ewma_covariance` (recency-weighted) / `ledoit_wolf_covariance`
+  (shrinkage towards a scaled-identity target - the platform's default, since it's
+  the standard choice once the asset count isn't tiny relative to the sample size).
+- **Sizing** (`...portfolio.sizing.compute_position_size`) implements the platform
+  spec's formula directly: `risk_budget = NAV x allowed_risk_percentage` (reusing
+  `config/risk_limits.yaml`'s existing `position_risk.normal_min/normal_max/
+  high_conviction_max`, keyed by the risk-unit band the Phase 4 composite score
+  already produces - no second, competing set of numbers), `position_size =
+  risk_budget / stop_distance_pct` where `stop_distance_pct` is the trend engine's own
+  ATR expressed as a fraction of price. Zero risk units (no conviction) fails safe to
+  zero risk budget, not a "very small" position.
+- **Construction** (`...portfolio.construction`) turns a covariance matrix into
+  weights two ways: `inverse_volatility_weights` (simple, ignores correlation, the
+  fallback) and `equal_risk_contribution_weights` (each position contributes equally
+  to portfolio variance, accounting for correlation - the spec's more sophisticated
+  default), the latter solved via Spinu's convex log-barrier formulation with `cvxpy`
+  rather than a heuristic iteration, so the result is a verifiable optimum.
+  `scale_to_target_volatility` then levers the whole weight set up or down to hit
+  `config/risk_limits.yaml`'s `target_volatility` without changing the relative sizing
+  between positions.
+- **Exposures** (`...portfolio.exposures`) reports gross/net exposure and breakdowns
+  by `Instrument`'s own `asset_class`/`country`/`currency` fields (no parallel
+  taxonomy), plus marginal contribution to risk (`MCR_i = (Sigma w)_i / portfolio_vol`)
+  and component contribution to risk (`CCR_i = w_i * MCR_i`, which sums exactly to
+  total portfolio volatility - the correct way to answer "where does our risk actually
+  come from," since a small, highly-correlated position can contribute disproportionately
+  more risk than its weight alone would suggest).
+- None of this enforces `config/risk_limits.yaml`'s `concentration_limits`,
+  `soft_volatility_limit`/`hard_volatility_limit`, or the `drawdown_governor` schedule -
+  that enforcement is Phase 6's risk engine. A weight or size coming back from this
+  layer is a proposal, not an approved or executed trade; there is still no persisted
+  `Position`/`Trade` row driving any of it (Phase 8).
 
 ## Known limitations
 
@@ -376,14 +456,19 @@ curl "http://localhost:8000/signals?asset_class=fx" # ranked list, filterable
   against live data end to end (see "Real data adapters" above for which are
   documentation-verified vs. best-guess) - do a live run before relying on them.
   ABS's GDP indicator has no mapping at all yet (data key not confirmed).
-- The API is read-only in the sense that matters most: there are no portfolio, risk, or
-  execution endpoints yet, and nothing here can place an order - those land from Phase 5
-  onward as their respective engines are built.
-- The dashboard has price/macro/regime/signals browsers + system status, not the full
-  8-page CIO dashboard described in the platform spec - that requires the
-  portfolio/risk/attribution layers built in later phases.
+- The API has portfolio-construction endpoints (Phase 5) but no risk-limit enforcement,
+  execution endpoints, or persisted positions yet, and nothing here can place an
+  order - those land from Phase 6 onward as their respective engines are built.
+- The dashboard has price/macro/regime/signals/portfolio browsers + system status, not
+  the full 8-page CIO dashboard described in the platform spec - that requires the
+  risk/attribution layers built in later phases.
 - `Portfolio`/`Position`/`Trade` tables exist (for schema/migration stability) but are
-  not yet populated by any business logic.
+  not yet populated by any business logic - Phase 5's weights/sizes are computed
+  on demand and returned, never persisted.
+- `equal_risk_contribution_weights` is solved with `cvxpy`'s CLARABEL backend (the
+  ECOS backend some cvxpy examples default to isn't installed here); if you add solver
+  backends, re-verify the fallback-to-inverse-volatility path in
+  `jlmacro.portfolio.construction` still triggers correctly on a genuine non-convergence.
 - The regime engine's decision tree, bucket thresholds and confidence heuristic are a
   transparent v1 by design (see "Macro regime engine" above) - they have not been
   back-tested against real historical regimes, only sanity-checked against synthetic
@@ -413,8 +498,8 @@ immediately benefit from broader real (non-synthetic) coverage across the 6 coun
 and a real market-data vendor would very likely also carry real earnings/fundamentals
 data that could replace the signal engine's equity valuation proxy.
 
-Phase 5 next: portfolio construction and position sizing (volatility targeting, risk
-parity, correlation, marginal/component risk contribution) - the layer with actual
-authority to size a position, which the signal engine's `suggested_risk_units` is
-explicitly *not*. Phase 6 (VaR/Expected Shortfall/stress testing/drawdown governor)
-naturally follows once there are real positions to measure risk on.
+Phase 6 next: the risk engine (historical/parametric/Monte Carlo VaR, Expected
+Shortfall, hypothetical scenario stress testing via `config/scenarios.yaml`, and the
+drawdown governor schedule already sitting unenforced in `config/risk_limits.yaml`) -
+the layer with actual authority to cut Phase 5's proposed sizes down, which neither
+the signal engine's `suggested_risk_units` nor Phase 5's weights/sizes are.
