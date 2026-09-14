@@ -207,13 +207,25 @@ python scripts/ingest_real_macro_data.py --source abs  --countries AU
 
 Which (country, indicator_code) maps to which series is entirely config-driven -
 `config/macro_indicators.yaml`'s `provider_series_ids` section, never hard-coded in the
-adapters. **The RBA/ABS entries in that file are marked "VERIFY"**: this platform was
-built in a network-restricted sandbox that could not reach `rba.gov.au` or
-`api.data.abs.gov.au` (nor `api.stlouisfed.org`) to confirm the exact current
-table/series/dataflow codes live, so double-check each one against the live site before
-relying on it. The adapters' HTTP/parsing logic is unit-tested against fixtures modeled
-on each API's real documented response shape (FRED's ALFRED JSON, RBA's CSV table
-layout, ABS's SDMX-JSON), so that part is trustworthy independent of the exact codes.
+adapters. This platform was built in a network-restricted sandbox that could not reach
+`rba.gov.au`, `api.data.abs.gov.au`, or `api.stlouisfed.org` directly, so none of these
+mappings have been end-to-end smoke-tested against live data yet - but their
+verification status differs:
+
+- **RBA's entries are marked "VERIFY"** - best-known table/series codes, not checked
+  against any live source.
+- **ABS's `CPI_HEADLINE` mapping (`ABS,CPI,2.0.0` / `1.10001.10.50.M`) was confirmed
+  against ABS's own published Data API documentation** (reachable via search even
+  though the API itself wasn't) - it's a worked example straight from ABS's docs, not a
+  guess. ABS's `GDP` mapping was deliberately left **unmapped**: the dataflow ID
+  (`ANA_AGG`) is confirmed, but no verified data key could be found without a live call
+  to ABS's dataflow/datastructure endpoints - see the comment in
+  `config/macro_indicators.yaml` for exactly what to call to add it.
+
+Either way, do one live run before depending on any of them, and the adapters'
+HTTP/parsing logic is unit-tested against fixtures modeled on each API's real
+documented response shape (FRED's ALFRED JSON, RBA's CSV table layout, ABS's
+SDMX-JSON), so that part is trustworthy independent of the exact codes.
 
 **FRED vs. RBA/ABS point-in-time handling differs, deliberately:** FRED's ALFRED API
 gives a true vintage history, so `FredProvider` records already carry a real
@@ -236,9 +248,10 @@ rather than inserted.
 
 - Market-data providers (a real price vendor) and ECB/BoE/BoJ/World Bank/IMF macro
   adapters are not yet built - only FRED/RBA/ABS macro adapters exist so far.
-- The RBA/ABS series/table/dataflow identifiers in `config/macro_indicators.yaml`
-  could not be verified against the live sites from this build environment (see "Real
-  data adapters" above) - verify before relying on them in production.
+- None of the FRED/RBA/ABS mappings in `config/macro_indicators.yaml` have been tested
+  against live data end to end (see "Real data adapters" above for which are
+  documentation-verified vs. best-guess) - do a live run before relying on them.
+  ABS's GDP indicator has no mapping at all yet (data key not confirmed).
 - The API is read-only. There are no portfolio, risk, signal, or execution endpoints
   yet - those land from Phase 4 onward as their respective engines are built.
 - The dashboard is a minimal research view (price/macro browsers + system status), not

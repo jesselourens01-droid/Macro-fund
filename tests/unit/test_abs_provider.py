@@ -86,6 +86,28 @@ def test_abs_provider_parses_sdmx_json():
     assert rec["revision_date"] is None
 
 
+def test_abs_provider_builds_url_from_verified_worked_example():
+    # Locks in that CPI_HEADLINE's config/macro_indicators.yaml mapping still matches
+    # the worked example straight from ABS's own Data API documentation:
+    # https://data.api.abs.gov.au/rest/data/ABS,CPI,2.0.0/1.10001.10.50.M
+    captured = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json=_SAMPLE_SDMX_JSON)
+
+    provider = ABSProvider(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    provider.fetch(
+        identifiers=["CPI_HEADLINE"],
+        start=dt.date(2023, 1, 1),
+        end=dt.date(2024, 12, 31),
+        countries=["AU"],
+    )
+
+    assert len(captured) == 1
+    assert captured[0].url.path == "/rest/data/ABS,CPI,2.0.0/1.10001.10.50.M"
+
+
 def test_abs_provider_filters_by_date_range():
     provider = ABSProvider(client=_client_returning(_SAMPLE_SDMX_JSON))
     records = provider.fetch(

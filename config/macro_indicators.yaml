@@ -101,13 +101,16 @@ sources:
 #
 # FRED IDs below are FRED's standard, stable series mnemonics (fred.stlouisfed.org).
 #
-# RBA/ABS entries marked "VERIFY" are the current table/series/dataflow identifiers as
-# best known at the time this was written; RBA and ABS occasionally renumber tables and
-# series codes, and this environment's network policy blocked live verification against
-# rba.gov.au / api.data.abs.gov.au while building this - confirm each one against the
-# live site before relying on it, and treat RBAProvider/ABSProvider's parsing logic
-# (tested against realistic fixtures) as the trustworthy part, these codes as the part
-# to double-check.
+# RBA entries marked "VERIFY" are the current table/series identifiers as best known at
+# the time this was written - this environment's network policy blocked a live call to
+# rba.gov.au to confirm them; RBA occasionally renumbers tables and series codes, so
+# confirm before relying on them. ABS's CPI_HEADLINE mapping below was checked against
+# ABS's own published Data API documentation (search-accessible even though the API
+# itself wasn't reachable from here) and matches a worked example straight from ABS's
+# docs, so it is on firmer footing than the RBA entries, though still not live-tested
+# end to end - see the comment on it for sources. Either way, treat
+# RBAProvider/ABSProvider's parsing logic (tested against realistic fixtures) as the
+# trustworthy part of this system, these identifiers as the part to double-check.
 provider_series_ids:
   FRED:
     US:
@@ -142,11 +145,26 @@ provider_series_ids:
 
   ABS:
     AU:
-      # VERIFY: ABS Data API dataflow for the Consumer Price Index.
+      # Verified against ABS's own published documentation (still not live-tested end
+      # to end - this sandbox's network policy blocks api.data.abs.gov.au, see below):
+      # dataflow syntax is "{agencyId},{dataflowId},{version}" per ABS's Data API user
+      # guide ("Using the API"), and "ABS,CPI,2.0.0"/"1.10001.10.50.M" is a worked
+      # example straight from ABS's own "Worked Examples" page (All groups CPI,
+      # Australia) - see
+      # https://www.abs.gov.au/statistics/application-programming-interfaces-apis/data-api-user-guide/worked-examples
+      # and https://www.abs.gov.au/statistics/application-programming-interfaces-apis/data-api-user-guide/using-api.
+      # Still do one live request before depending on this: dimension-code meanings
+      # (e.g. the "10"/"50" positions) were not independently confirmed, only that this
+      # exact key string appears in ABS's own docs as a valid CPI query.
       CPI_HEADLINE:
-        dataflow: "CPI"
-        key: "1.10001.10.50.Q"
-      # VERIFY: ABS Data API dataflow for quarterly GDP growth.
-      GDP:
-        dataflow: "ANA_AGG"
-        key: "1.20.10.Q"
+        dataflow: "ABS,CPI,2.0.0"
+        key: "1.10001.10.50.M"
+      # GDP: the dataflow ID "ANA_AGG" (Australian National Accounts aggregates:
+      # GDP, GDP per capita, terms of trade, real income) is confirmed via ABS/AGA
+      # documentation, but no verified example *data key* (dimension values) for it
+      # could be found without a live call to ABS's dataflow/datastructure endpoints
+      # (blocked from this sandbox) - deliberately left unmapped rather than guessing
+      # a key. To add it: call
+      # https://data.api.abs.gov.au/rest/datastructure/ABS/ANA_AGG?references=all
+      # (or the dataflow's own structure endpoint) to get the real dimension list and
+      # codelists, then set dataflow: "ABS,ANA_AGG,<version>" and the matching key here.
