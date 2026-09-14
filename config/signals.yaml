@@ -1,0 +1,109 @@
+# Quantitative signal engine parameters (src/jlmacro/models/signals/). Composite
+# weights and score-band thresholds already live in config/risk_limits.yaml
+# (signal_weights, investment_score_thresholds) since the platform spec defines them
+# there as fund risk policy, not signal-engine tuning - this file holds everything else.
+#
+# IMPORTANT DATA CAVEAT: this platform does not yet have real earnings, futures-curve,
+# CFTC positioning, options, or consensus-estimate data sources (those are Phase 2+
+# work). Valuation for equities/commodities and the entire positioning/catalyst
+# engines below are therefore honestly-documented *proxies* built from data we do
+# have (prices, macro indicators) - not fabricated fundamentals. Each proxy is called
+# out in its module's docstring; swap in real data behind the same function
+# signatures once those adapters exist, no caller changes needed.
+
+trend:
+  lookback_periods_days: [20, 60, 120, 200]
+  atr_period_days: 14
+  persistence_lookback_days: 20
+  min_observations: 210  # a bit more than the longest lookback, so all windows are valid
+  # Composite vol-adjusted-momentum score -> 5-way label thresholds (symmetric).
+  strong_threshold: 1.0
+  weak_threshold: 0.25
+
+valuation:
+  # Each *_sensitivity constant is the magnitude of the underlying metric (percentage
+  # points for rates/FX, a price-deviation fraction for equities) at which the 0-100
+  # score saturates towards 0 or 100 (via tanh) - i.e. how big a real-rate
+  # differential/real yield/price deviation counts as "extreme."
+  fx_sensitivity_pct: 2.0
+  rate_real_yield_sensitivity_pct: 2.0
+  # Equities: no earnings data source yet, so valuation is a mean-reversion-vs-own-
+  # trend proxy (rich/cheap relative to the instrument's OWN history, not a true
+  # fundamental fair value from earnings) over this window.
+  equity_trend_window_days: 1825
+  equity_deviation_sensitivity: 0.15
+  # Commodities: no futures-curve/inventory data yet, so valuation is a real-US-rate
+  # sensitivity proxy (non-yielding assets tend to look "cheap" when real rates are
+  # low/falling), not a real futures-curve/inventory model.
+  commodity_real_rate_sensitivity_pct: 2.0
+  min_observations: 60
+
+positioning:
+  # RSI-based price-crowding proxy (see positioning.py docstring for why).
+  rsi_period_days: 14
+  extreme_long_rsi: 80
+  crowded_long_rsi: 65
+  crowded_short_rsi: 35
+  extreme_short_rsi: 20
+  min_observations: 30
+
+catalyst:
+  upcoming_window_days: 30
+  surprise_lookback_periods: 12
+  # How much the presence of upcoming catalysts within the window moves the score
+  # away from the neutral midpoint (50), before adding the surprise-direction term.
+  upcoming_event_weight: 10
+  max_upcoming_events_counted: 3
+  surprise_weight: 15
+
+# Country regime label (jlmacro.models.enums.RegimeLabel) -> asset-class-specific
+# "attractiveness of a LONG position" score (0-100, 50=neutral). These are qualitative
+# fund-analyst priors for a transparent v1, not fitted/backtested - Phase 7's
+# backtesting engine is what should validate or recalibrate them.
+#
+# equity_index: growth/easy-conditions regimes favour long equities.
+# rate: score is the attractiveness of being LONG DURATION (long the bond) - growth
+#       scares/flight-to-quality regimes favour long duration; strong-growth/inflation
+#       regimes favour short duration.
+# fx: attractiveness of being long *this country's* currency - carry/growth-differential
+#     regimes favour it; risk-off tends to favour funding/reserve currencies instead
+#     (a simplification - true FX macro scoring needs the *pair's* two countries, see
+#     valuation.py's real-rate-differential calc for the more precise cross-country part).
+# commodity: global-growth/reflationary regimes favour long commodities.
+macro_score_by_regime:
+  equity_index:
+    goldilocks: 90
+    reflation: 75
+    recovery: 80
+    late_cycle: 40
+    stagflation: 15
+    deflation: 20
+    risk_off: 10
+    liquidity_crisis: 0
+  rate:
+    goldilocks: 30
+    reflation: 15
+    recovery: 25
+    late_cycle: 60
+    stagflation: 20
+    deflation: 85
+    risk_off: 80
+    liquidity_crisis: 90
+  fx:
+    goldilocks: 60
+    reflation: 65
+    recovery: 60
+    late_cycle: 45
+    stagflation: 40
+    deflation: 30
+    risk_off: 25
+    liquidity_crisis: 15
+  commodity:
+    goldilocks: 65
+    reflation: 80
+    recovery: 70
+    late_cycle: 50
+    stagflation: 55
+    deflation: 20
+    risk_off: 15
+    liquidity_crisis: 10

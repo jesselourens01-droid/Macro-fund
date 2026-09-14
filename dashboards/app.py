@@ -9,6 +9,7 @@ once there is a portfolio/risk/attribution layer to display.
 
 from __future__ import annotations
 
+import datetime as dt
 import sys
 from pathlib import Path
 
@@ -17,9 +18,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from sqlalchemy import select
 
 from jlmacro.config import get_settings, load_yaml_config
 from jlmacro.database.session import session_scope
+from jlmacro.models.instrument import Instrument
+from jlmacro.models.signals import compute_investment_score
 from jlmacro.reporting.queries import (
     list_instruments,
     macro_data_history,
@@ -56,8 +60,8 @@ if instruments_df.empty:
     )
     st.stop()
 
-tab_prices, tab_macro, tab_regime, tab_universe = st.tabs(
-    ["Prices", "Macro Indicators", "Macro Regime", "Asset Universe"]
+tab_prices, tab_macro, tab_regime, tab_signals, tab_universe = st.tabs(
+    ["Prices", "Macro Indicators", "Macro Regime", "Signals", "Asset Universe"]
 )
 
 with tab_prices:
@@ -248,6 +252,122 @@ with tab_regime:
             m2.metric("Confidence", f"{latest['confidence']:.0%}")
 
             st.dataframe(history_df.sort_values("as_of", ascending=False), width="stretch")
+
+with tab_signals:
+    st.subheader("Investment signals - ranked opportunities")
+    st.caption(
+        "Composite = weighted Macro / Valuation / Trend / Positioning / Catalyst "
+        "(weights and action thresholds from config/risk_limits.yaml). Positioning "
+        "and Catalyst use documented proxies (RSI-based crowding; projected-cadence "
+        "and self-referential surprise) pending real CFTC/options/consensus-calendar "
+        "data - see src/jlmacro/models/signals/ docstrings. **suggested_risk_units is "
+        "advisory only** - the risk engine (Phase 5+) has final authority over "
+        "position size."
+    )
+
+    @st.cache_data(ttl=300)
+    def _compute_all_scores(as_of_iso: str, asset_class_value: str | None) -> list[dict]:
+        as_of = dt.date.fromisoformat(as_of_iso)
+        with session_scope() as scoring_session:
+            stmt = select(Instrument).where(Instrument.is_active.is_(True))
+            if asset_class_value:
+                stmt = stmt.where(Instrument.asset_class == asset_class_value)
+            symbols = [
+                instrument.symbol
+                for instrument in scoring_session.scalars(stmt.order_by(Instrument.symbol))
+            ]
+
+            rows = []
+            for symbol in symbols:
+                score = compute_investment_score(scoring_session, symbol, as_of=as_of)
+                rows.append(
+                    {
+                        "symbol": score.instrument_symbol,
+                        "action": score.action,
+                        "composite": score.composite_score,
+                        "macro": score.macro_score,
+                        "valuation": score.valuation_score,
+                        "trend": score.trend_score,
+                        "positioning": score.positioning_score,
+                        "catalyst": score.catalyst_score,
+                        "trend_label": score.detail.get("trend_label"),
+                        "positioning_label": score.detail.get("positioning_label"),
+                    }
+                )
+            return rows
+
+    col1, col2 = st.columns(2)
+    signal_as_of = col1.date_input(
+        "As of", value=dt.datetime.now(tz=dt.UTC).date(), key="signals_as_of"
+    )
+    asset_class_options = ["All", *sorted(instruments_df["asset_class"].unique())]
+    signal_asset_class = col2.selectbox(
+        "Asset class filter", asset_class_options, key="signals_asset_class"
+    )
+
+    rows = _compute_all_scores(
+        signal_as_of.isoformat(), None if signal_asset_class == "All" else signal_asset_class
+    )
+    scores_df = pd.DataFrame(rows).sort_values("composite", ascending=False, na_position="last")
+
+    _ACTION_COLORS = {
+        "max_unit": "background-color: rgb(26,152,80); color: white",
+        "full_unit": "background-color: rgb(140,198,101)",
+        "half_unit": "background-color: rgb(217,239,139)",
+        "watchlist": "background-color: rgb(255,235,180)",
+        "no_position": "",
+    }
+
+    display_cols = [
+        "symbol",
+        "action",
+        "composite",
+        "macro",
+        "valuation",
+        "trend",
+        "positioning",
+        "catalyst",
+    ]
+    numeric_cols = ["composite", "macro", "valuation", "trend", "positioning", "catalyst"]
+    styled_scores = (
+        scores_df[display_cols]
+        .style.map(lambda v: _ACTION_COLORS.get(v, ""), subset=["action"])
+        .format({c: "{:.1f}" for c in numeric_cols}, na_rep="—")
+    )
+    st.dataframe(styled_scores, width="stretch", hide_index=True)
+
+    if not scores_df.empty:
+        st.divider()
+        st.subheader("Signal detail for one instrument")
+        detail_symbol = st.selectbox(
+            "Instrument", scores_df["symbol"].tolist(), key="signals_detail_symbol"
+        )
+        detail_row = scores_df.loc[scores_df["symbol"] == detail_symbol].iloc[0]
+
+        fig = go.Figure(
+            go.Bar(
+                x=["Macro", "Valuation", "Trend", "Positioning", "Catalyst"],
+                y=[
+                    detail_row[col]
+                    for col in ["macro", "valuation", "trend", "positioning", "catalyst"]
+                ],
+            )
+        )
+        fig.update_layout(
+            title=f"{detail_symbol} factor breakdown",
+            yaxis_title="Score (0-100, 50 = neutral)",
+            yaxis_range=[0, 100],
+            height=350,
+        )
+        st.plotly_chart(fig, width="stretch")
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric(
+            "Composite score",
+            f"{detail_row['composite']:.1f}" if pd.notna(detail_row["composite"]) else "n/a",
+        )
+        m2.metric("Action", str(detail_row["action"]).replace("_", " ").title())
+        m3.metric("Trend label", str(detail_row["trend_label"]).replace("_", " ").title())
 
 with tab_universe:
     st.subheader("Configured asset universe")

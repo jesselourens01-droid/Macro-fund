@@ -8,7 +8,7 @@ portfolio management, risk management and decision support.
 broker-specific safeguards before any order can be transmitted.** See
 `jlmacro.config.Settings.jlmacro_live_trading_enabled` and `src/jlmacro/execution/`.
 
-## Status: Phase 1 + partial Phase 2 + Phase 3 (v1)
+## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1)
 
 **Phase 1** (complete):
 
@@ -52,6 +52,27 @@ classifiers are explicitly future work):
   Page 2, plus a per-country score history chart
 - `scripts/compute_regime_snapshots.py` to (re)compute snapshots from current data
 
+**Phase 4** (quantitative signal engine, v1 - real computations where the data
+supports them, honestly-documented proxies elsewhere; see "Signal engine" below):
+
+- Trend (`jlmacro.models.signals.trend`): real, first-principles multi-timeframe
+  volatility-adjusted momentum + persistence, point-in-time correct
+- Valuation (`...signals.valuation`): real FX real-rate differential and RATE real
+  yield; documented proxies for EQUITY_INDEX (trend-deviation) and COMMODITY
+  (US-real-rate sensitivity), since there's no real earnings/futures-curve data yet
+- Positioning (`...signals.positioning`): an RSI-based crowding proxy, since there's
+  no real CFTC/options data yet
+- Catalyst (`...signals.catalyst`): projected-cadence upcoming releases and
+  self-referential surprise (reusing the regime engine's z-scoring), since there's no
+  real consensus-calendar data yet
+- Macro factor (`...signals.macro_factor`): maps a country's regime (Phase 3) onto an
+  asset-class-specific score via a configurable table
+- Composite score (`...signals.composite`): weighted combination per
+  `config/risk_limits.yaml`'s existing `signal_weights`/`investment_score_thresholds`,
+  renormalized over whichever components are actually available
+- `GET /signals`, `/signals/{symbol}` API endpoints, and a "Signals" dashboard tab
+  (the platform spec's Page 5 "highest-ranking opportunities" view)
+
 See `docs/` and the phase list in the original platform specification for what comes
 next. Do not build later phases until this one is reviewed.
 
@@ -68,8 +89,9 @@ src/jlmacro/
   database/      SQLAlchemy engine/session/declarative base.
   models/        ORM models: Instrument, MarketDataPoint, MacroDataPoint, AuditLogEntry,
                  Portfolio/Position/Trade, RegimeSnapshot. models/regime holds the
-                 macro regime engine itself (Phase 3, transparent v1); models/{macro,
-                 signals,ml} hold future *statistical* model definitions, not ORM models.
+                 macro regime engine (Phase 3); models/signals holds the quantitative
+                 signal engine - trend/valuation/positioning/catalyst/composite
+                 (Phase 4); models/ml holds the future ML research layer.
   portfolio/, risk/, execution/, backtest/, attribution/, reporting/, compliance/
                  Package placeholders for Phase 5+ - deliberately near-empty for now.
   utils/         Structured logging, ID generation, audit logging.
@@ -303,6 +325,49 @@ python scripts/compute_regime_snapshots.py --countries US,AU --start 2023-01-01 
   Markov frequency count over that country's own regime history, not a guess, but they
   only mean something once there's a reasonable amount of history to count over.
 
+## Signal engine (Phase 4)
+
+Five factor scores per instrument, each 0-100 and framed consistently as
+"attractiveness of a LONG position" (50 = neutral; shorts read as the mirror image,
+100 minus the score), combined into one composite via `config/risk_limits.yaml`'s
+existing `signal_weights`/`investment_score_thresholds`:
+
+```bash
+curl "http://localhost:8000/signals/SPX"           # one instrument
+curl "http://localhost:8000/signals?asset_class=fx" # ranked list, filterable
+```
+
+- **Trend** (`jlmacro.models.signals.trend`) is a real computation: volatility-adjusted
+  momentum across 20/60/120/200-trading-day lookbacks (deliberately not a single
+  moving-average crossover, per the platform spec) plus a persistence measure,
+  point-in-time correct like every other engine here.
+- **Valuation** (`...signals.valuation`) is real for FX (real-rate differential between
+  the pair's two economies) and RATE (real yield = nominal yield minus latest CPI -
+  both already on a comparable percentage-point scale in this platform's data model).
+  For EQUITY_INDEX and COMMODITY it is an honestly-documented **proxy** (trend-deviation
+  mean-reversion; US-real-rate sensitivity respectively) - this platform has no real
+  earnings or futures-curve/inventory data source yet.
+- **Positioning** (`...signals.positioning`) is an RSI(14)-based crowding **proxy** -
+  there is no real CFTC/open-interest/options data source yet. Framed contrarian: an
+  overbought reading lowers the score (squeeze/reversal risk for adding to a long), an
+  oversold reading raises it.
+- **Catalyst** (`...signals.catalyst`) projects upcoming releases from each
+  indicator's own historical cadence (not a scheduled calendar - it can't know about a
+  postponement or a one-off event) and scores recent self-referential surprise (how far
+  the latest value sits from the indicator's own history, reusing the regime engine's
+  z-scoring) - there is no real consensus-estimate data source yet.
+- **Macro** (`...signals.macro_factor`) maps a country's current regime (Phase 3) onto
+  an asset-class-specific score via `config/signals.yaml`'s `macro_score_by_regime`
+  table - qualitative fund-analyst priors for a transparent v1, not fitted/backtested.
+- **Composite** (`...signals.composite.compute_investment_score`) is the weighted
+  average of whichever of the five components are actually available, with weights
+  **renormalized** over just those (a missing component is excluded, never treated as
+  zero) - see `tests/unit/test_signals_composite.py` for exactly what that means.
+  `suggested_risk_units` (0 / 0 / 0.5 / 1 / 1.5, from the composite's score band) is
+  **advisory only**: per the platform spec, "the system must never allow score alone to
+  override portfolio-risk limits," and the risk engine that would actually enforce that
+  doesn't exist yet (Phase 5+).
+
 ## Known limitations
 
 - Market-data providers (a real price vendor) and ECB/BoE/BoJ/World Bank/IMF macro
@@ -311,10 +376,11 @@ python scripts/compute_regime_snapshots.py --countries US,AU --start 2023-01-01 
   against live data end to end (see "Real data adapters" above for which are
   documentation-verified vs. best-guess) - do a live run before relying on them.
   ABS's GDP indicator has no mapping at all yet (data key not confirmed).
-- The API is read-only. There are no portfolio, risk, signal, or execution endpoints
-  yet - those land from Phase 4 onward as their respective engines are built.
-- The dashboard is a minimal research view (price/macro browsers + system status), not
-  the full 8-page CIO dashboard described in the platform spec - that requires the
+- The API is read-only in the sense that matters most: there are no portfolio, risk, or
+  execution endpoints yet, and nothing here can place an order - those land from Phase 5
+  onward as their respective engines are built.
+- The dashboard has price/macro/regime/signals browsers + system status, not the full
+  8-page CIO dashboard described in the platform spec - that requires the
   portfolio/risk/attribution layers built in later phases.
 - `Portfolio`/`Position`/`Trade` tables exist (for schema/migration stability) but are
   not yet populated by any business logic.
@@ -323,6 +389,12 @@ python scripts/compute_regime_snapshots.py --countries US,AU --start 2023-01-01 
   back-tested against real historical regimes, only sanity-checked against synthetic
   data. Treat regime labels/confidence as illustrative until validated against real
   macro history.
+- The signal engine's Positioning and Catalyst components, and its Equity/Commodity
+  Valuation components, are documented proxies pending real CFTC/options/consensus-
+  calendar/earnings/futures-curve data (see "Signal engine" above) - treat their scores
+  as illustrative, not as a substitute for the real data sources they stand in for.
+  `macro_score_by_regime`'s regime->score table is likewise an unvalidated fund-analyst
+  prior, not backtested.
 - `docker compose up` was validated via `docker compose config` (syntax/wiring) and by
   running every component (migrations, seeding, API, dashboard, full test suite)
   against an equivalent local PostgreSQL 16 instance; a Docker daemon was not available
@@ -336,9 +408,13 @@ python scripts/compute_regime_snapshots.py --countries US,AU --start 2023-01-01 
 
 Remaining Phase 2: a real market-data provider (price vendor) behind
 `BaseMarketDataProvider`, and optionally ECB/BoE/BoJ/World Bank/IMF macro adapters
-following the same pattern as FRED/RBA/ABS - the regime engine would immediately
-benefit from broader real (non-synthetic) coverage across the 6 countries.
+following the same pattern as FRED/RBA/ABS - the regime and signal engines would
+immediately benefit from broader real (non-synthetic) coverage across the 6 countries,
+and a real market-data vendor would very likely also carry real earnings/fundamentals
+data that could replace the signal engine's equity valuation proxy.
 
-Phase 4 next: the quantitative signal engine (trend/valuation/positioning/catalyst
-scores and the composite investment score) that the platform spec has consuming the
-regime engine's output alongside its own inputs.
+Phase 5 next: portfolio construction and position sizing (volatility targeting, risk
+parity, correlation, marginal/component risk contribution) - the layer with actual
+authority to size a position, which the signal engine's `suggested_risk_units` is
+explicitly *not*. Phase 6 (VaR/Expected Shortfall/stress testing/drawdown governor)
+naturally follows once there are real positions to measure risk on.

@@ -82,6 +82,20 @@ class RegimeStatusOut(BaseModel):
     transition_probabilities: dict[str, float]
 
 
+class InvestmentScoreOut(BaseModel):
+    instrument_symbol: str
+    as_of: dt.date
+    macro_score: float | None
+    valuation_score: float | None
+    trend_score: float | None
+    positioning_score: float | None
+    catalyst_score: float | None
+    composite_score: float | None
+    action: str
+    suggested_risk_units: float
+    detail: dict[str, object]
+
+
 class HealthOut(BaseModel):
     status: str
     environment: str

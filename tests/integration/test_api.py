@@ -104,3 +104,27 @@ def test_regime_endpoints(db_session, client):
     matrix = resp.json()
     assert matrix["US"] is not None
     assert matrix["AU"] is None
+
+
+def test_signals_endpoints(db_session, client):
+    resp = client.get("/signals/SPX")
+    assert resp.status_code == 404
+
+    instruments = seed_instruments(db_session)
+    seed_market_data(db_session, instruments, start=dt.date(2023, 1, 1), end=dt.date(2026, 6, 1))
+    seed_macro_data(db_session, start=dt.date(2023, 1, 1), end=dt.date(2026, 6, 1))
+    compute_and_persist_snapshot(db_session, "US", as_of=dt.date(2026, 6, 30))
+
+    resp = client.get("/signals/SPX", params={"as_of": "2026-06-30"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["instrument_symbol"] == "SPX"
+    assert body["action"] in {"no_position", "watchlist", "half_unit", "full_unit", "max_unit"}
+    assert body["suggested_risk_units"] in {0.0, 0.5, 1.0, 1.5}
+
+    resp = client.get("/signals", params={"asset_class": "equity_index", "as_of": "2026-06-30"})
+    assert resp.status_code == 200
+    ranked = resp.json()
+    assert len(ranked) > 0
+    composites = [row["composite_score"] for row in ranked if row["composite_score"] is not None]
+    assert composites == sorted(composites, reverse=True)
