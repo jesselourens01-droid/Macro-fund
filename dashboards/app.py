@@ -20,6 +20,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import select
 
+from jlmacro.backtest.engine import run_backtest
+from jlmacro.backtest.monte_carlo import bootstrap_terminal_nav
 from jlmacro.config import get_settings, load_yaml_config
 from jlmacro.database.session import session_scope
 from jlmacro.models.instrument import Instrument
@@ -84,8 +86,26 @@ if instruments_df.empty:
     )
     st.stop()
 
-tab_prices, tab_macro, tab_regime, tab_signals, tab_portfolio, tab_risk, tab_universe = st.tabs(
-    ["Prices", "Macro Indicators", "Macro Regime", "Signals", "Portfolio", "Risk", "Asset Universe"]
+(
+    tab_prices,
+    tab_macro,
+    tab_regime,
+    tab_signals,
+    tab_portfolio,
+    tab_risk,
+    tab_backtest,
+    tab_universe,
+) = st.tabs(
+    [
+        "Prices",
+        "Macro Indicators",
+        "Macro Regime",
+        "Signals",
+        "Portfolio",
+        "Risk",
+        "Backtest",
+        "Asset Universe",
+    ]
 )
 
 with tab_prices:
@@ -697,6 +717,108 @@ with tab_risk:
                 size_result.risk_budget, current_drawdown, config=governor_config
             )
             dcol3.metric("Governed risk budget (from Sizing above)", f"{governed_budget:,.0f}")
+
+with tab_backtest:
+    st.subheader("Backtest")
+    st.caption(
+        "Replays the signal engine (Phase 4) and portfolio construction (Phase 5) "
+        "over history, one rebalance period at a time - each period's weights are "
+        "decided using only data knowable before that period starts. Slow: one "
+        "investment-score computation per symbol per rebalance date, so keep the "
+        "date range and symbol count modest here."
+    )
+
+    bcol1, bcol2, bcol3 = st.columns(3)
+    backtest_symbols = bcol1.multiselect(
+        "Instruments",
+        sorted(instruments_df["symbol"].unique()),
+        default=[
+            s
+            for s in ["SPX", "NDX", "US10Y", "XAU", "EURUSD", "AUDUSD"]
+            if s in instruments_df["symbol"].values
+        ],
+        key="backtest_symbols",
+    )
+    backtest_start = bcol2.date_input("Start", value=dt.date(2025, 1, 1), key="backtest_start")
+    backtest_end = bcol3.date_input(
+        "End", value=dt.datetime.now(tz=dt.UTC).date(), key="backtest_end"
+    )
+    backtest_rebalance_days = st.slider(
+        "Rebalance frequency (days)", min_value=7, max_value=90, value=21, key="backtest_rebalance"
+    )
+
+    if len(backtest_symbols) < 2:
+        st.info("Select at least two instruments.")
+    elif backtest_start >= backtest_end:
+        st.warning("Start date must be before end date.")
+    elif st.button("Run backtest", key="backtest_run_button"):
+        with (
+            st.spinner(
+                "Running backtest - this replays the signal engine at every rebalance date..."
+            ),
+            session_scope() as session,
+        ):
+            backtest_result = run_backtest(
+                session,
+                backtest_symbols,
+                start=backtest_start,
+                end=backtest_end,
+                rebalance_frequency_days=backtest_rebalance_days,
+            )
+
+        nav_curve = backtest_result.nav_curve()
+        rcol1, rcol2, rcol3, rcol4 = st.columns(4)
+        rcol1.metric("Total return", f"{backtest_result.total_return:+.2%}")
+        rcol2.metric("Annualised vol", f"{backtest_result.annualised_volatility:.2%}")
+        rcol3.metric("Sharpe ratio", f"{backtest_result.sharpe_ratio:.2f}")
+        rcol4.metric("Max drawdown", f"{backtest_result.max_drawdown:.2%}")
+
+        fig = go.Figure(go.Scatter(x=nav_curve.index, y=nav_curve.values, mode="lines+markers"))
+        fig.update_layout(title="NAV curve", xaxis_title="Date", yaxis_title="NAV", height=380)
+        st.plotly_chart(fig, width="stretch")
+
+        periods_df = pd.DataFrame(
+            [
+                {
+                    "period_start": p.period_start,
+                    "period_end": p.period_end,
+                    "return": p.period_return,
+                    "positions": len(p.weights),
+                }
+                for p in backtest_result.periods
+            ]
+        )
+        st.dataframe(
+            periods_df.style.format({"return": "{:+.2%}"}), width="stretch", hide_index=True
+        )
+
+        period_returns = backtest_result.period_returns()
+        if not period_returns.empty:
+            st.divider()
+            st.subheader("Monte Carlo (bootstrap of this backtest's period returns)")
+            mc_result = bootstrap_terminal_nav(
+                period_returns, nav0=backtest_result.nav0, num_simulations=5_000, seed=42
+            )
+            mcol1, mcol2 = st.columns(2)
+            with mcol1:
+                st.caption("Terminal NAV percentiles")
+                st.dataframe(
+                    pd.Series(mc_result.terminal_nav_percentiles, name="NAV")
+                    .to_frame()
+                    .style.format("{:,.0f}")
+                )
+            with mcol2:
+                st.caption("Max drawdown percentiles")
+                st.dataframe(
+                    pd.Series(mc_result.max_drawdown_percentiles, name="Drawdown")
+                    .to_frame()
+                    .style.format("{:.2%}")
+                )
+            st.metric("Probability of loss", f"{mc_result.probability_of_loss:.1%}")
+            st.metric(
+                "Probability of breaching defensive-mode drawdown",
+                f"{mc_result.probability_of_defensive_mode_breach:.1%}",
+            )
 
 with tab_universe:
     st.subheader("Configured asset universe")

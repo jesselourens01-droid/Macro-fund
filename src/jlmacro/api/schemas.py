@@ -198,6 +198,75 @@ class DrawdownGovernorOut(BaseModel):
     governed_risk_budget: float | None
 
 
+class BacktestRequest(BaseModel):
+    symbols: list[str]
+    start: dt.date
+    end: dt.date
+    nav0: float = 10_000_000.0
+    rebalance_frequency_days: int | None = None
+    weighting_method: str | None = None
+    target_volatility: float | None = None
+
+
+class BacktestPeriodOut(BaseModel):
+    period_start: dt.date
+    period_end: dt.date
+    weights: dict[str, float]
+    period_return: float
+    nav_start: float
+    nav_end: float
+
+
+class BacktestOut(BaseModel):
+    start: dt.date
+    end: dt.date
+    nav0: float
+    periods: list[BacktestPeriodOut]
+    total_return: float
+    annualised_return: float
+    annualised_volatility: float
+    sharpe_ratio: float
+    max_drawdown: float
+    calmar_ratio: float
+    hit_rate: float
+
+
+class WalkForwardRequest(BaseModel):
+    symbols: list[str]
+    start: dt.date
+    end: dt.date
+    window_days: int
+    nav0: float = 10_000_000.0
+    rebalance_frequency_days: int | None = None
+    weighting_method: str | None = None
+    target_volatility: float | None = None
+
+
+class WalkForwardOut(BaseModel):
+    windows: list[tuple[dt.date, dt.date]]
+    results: list[BacktestOut]
+    mean_sharpe_ratio: float
+    worst_max_drawdown: float
+
+
+class MonteCarloRequest(BaseModel):
+    period_returns: list[float]
+    nav0: float = 10_000_000.0
+    num_simulations: int = 10_000
+    horizon_periods: int | None = None
+    seed: int | None = None
+
+
+class MonteCarloOut(BaseModel):
+    num_simulations: int
+    horizon_periods: int
+    nav0: float
+    terminal_nav_percentiles: dict[str, float]
+    probability_of_loss: float
+    max_drawdown_percentiles: dict[str, float]
+    probability_of_defensive_mode_breach: float
+
+
 class HealthOut(BaseModel):
     status: str
     environment: str

@@ -8,7 +8,7 @@ portfolio management, risk management and decision support.
 broker-specific safeguards before any order can be transmitted.** See
 `jlmacro.config.Settings.jlmacro_live_trading_enabled` and `src/jlmacro/execution/`.
 
-## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1)
+## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1) + Phase 7 (v1)
 
 **Phase 1** (complete):
 
@@ -118,6 +118,28 @@ governor; see "Risk engine" below):
   Phase 5's proposed weights/sizes - though nothing here is wired to auto-cut a
   position yet, since there is still no persisted position to cut (Phase 8)
 
+**Phase 7** (backtesting, walk-forward validation, Monte Carlo simulation, v1; see
+"Backtesting" below):
+
+- Event-driven backtest (`jlmacro.backtest.engine.run_backtest`): replays the signal
+  engine (Phase 4) and portfolio construction (Phase 5) one rebalance period at a
+  time, deciding each period's weights from data knowable only *before* that period
+  starts, then measuring the return actually realised over it from real
+  point-in-time closes - the same no-look-ahead discipline as every other engine
+- Walk-forward validation (`...backtest.walk_forward`): splits history into
+  consecutive, non-overlapping windows and runs the backtest independently on each,
+  to check performance is reasonably consistent across different periods rather than
+  an artifact of one window (there's no model being fitted here to "walk forward" in
+  the classic sense - that's Phase 11's ML layer)
+- Monte Carlo (`...backtest.monte_carlo.bootstrap_terminal_nav`): bootstraps a
+  backtest's own realised period returns to build a distribution of plausible future
+  NAV paths, including the probability of breaching the Phase 6 drawdown governor's
+  defensive-mode threshold
+- `POST /backtest/run`, `/backtest/walk-forward`, `/backtest/monte-carlo` API
+  endpoints, and a "Backtest" dashboard tab
+- v1 doesn't yet model transaction costs, slippage, or financing - see "Known
+  limitations" below
+
 See `docs/` and the phase list in the original platform specification for what comes
 next. Do not build later phases until this one is reviewed.
 
@@ -139,8 +161,9 @@ src/jlmacro/
                  (Phase 4); models/ml holds the future ML research layer.
   portfolio/     Covariance, position sizing, weighting and exposures (Phase 5).
   risk/          VaR/Expected Shortfall, stress testing, drawdown governor (Phase 6).
-  execution/, backtest/, attribution/, reporting/, compliance/
-                 Package placeholders for Phase 7+ - deliberately near-empty for now.
+  backtest/      Event-driven backtest, walk-forward validation, Monte Carlo (Phase 7).
+  execution/, attribution/, reporting/, compliance/
+                 Package placeholders for Phase 8+ - deliberately near-empty for now.
   utils/         Structured logging, ID generation, audit logging.
 dashboards/      Streamlit app (presentation layer only - no business logic).
 scripts/         Operational scripts (synthetic data generator).
@@ -516,6 +539,45 @@ curl "http://localhost:8000/risk/drawdown?current_drawdown=-0.06&risk_budget=500
   still no persisted position to cut (Phase 8) or NAV series to compute a real
   drawdown from (Phase 9). Today it's numbers on demand, not an enforced gate.
 
+## Backtesting (Phase 7)
+
+```bash
+curl -X POST "http://localhost:8000/backtest/run" -H "Content-Type: application/json" \
+  -d '{"symbols": ["SPX", "US10Y", "XAU"], "start": "2025-01-01", "end": "2026-01-01"}'
+curl -X POST "http://localhost:8000/backtest/walk-forward" -H "Content-Type: application/json" \
+  -d '{"symbols": ["SPX", "US10Y", "XAU"], "start": "2024-01-01", "end": "2026-01-01", "window_days": 180}'
+curl -X POST "http://localhost:8000/backtest/monte-carlo" -H "Content-Type: application/json" \
+  -d '{"period_returns": [0.01, -0.02, 0.015], "nav0": 10000000}'
+```
+
+- **Backtest** (`jlmacro.backtest.engine.run_backtest`) is event-driven: at each
+  rebalance date it scores every candidate symbol with the Phase 4 composite score
+  using only data as of that date, keeps the ones whose action is `half_unit` or
+  better, builds weights over them via Phase 5's covariance/construction (again from
+  data as of that date only), signs each by whether its score reads bullish or
+  bearish, and holds those weights until the next rebalance date - at which point it
+  measures the period's return from real point-in-time closes. A period where fewer
+  than two symbols qualify is held flat (zero return) rather than guessing, the same
+  fail-safe convention `jlmacro.portfolio.sizing` uses. Reports the usual performance
+  stats (total/annualised return, annualised vol, Sharpe, max drawdown, Calmar, hit
+  rate) computed from the resulting NAV curve.
+- **Walk-forward validation** (`...backtest.walk_forward`) splits a date range into
+  consecutive, non-overlapping windows and runs an independent backtest on each -
+  since every engine here is rule-based rather than fitted, there's no model
+  parameter to retrain between windows; what this checks is whether the same
+  procedure holds up reasonably across different historical periods rather than
+  being a fluke of one window.
+- **Monte Carlo** (`...backtest.monte_carlo.bootstrap_terminal_nav`) resamples a
+  backtest's own realised period returns (with replacement) to build a distribution
+  of plausible NAV paths - reporting terminal-NAV and max-drawdown percentiles, the
+  probability of an outright loss, and the probability of breaching Phase 6's
+  drawdown-governor defensive-mode threshold along the way. A bootstrap, not a
+  parametric model: it makes no assumption about the return distribution's shape
+  beyond "the future resembles this sample," which is an honest limitation for a
+  short backtest history.
+- None of this models transaction costs, slippage, financing, or intra-period
+  rebalancing yet - see "Known limitations" below.
+
 ## Known limitations
 
 - Market-data providers (a real price vendor) and ECB/BoE/BoJ/World Bank/IMF macro
@@ -524,12 +586,20 @@ curl "http://localhost:8000/risk/drawdown?current_drawdown=-0.06&risk_budget=500
   against live data end to end (see "Real data adapters" above for which are
   documentation-verified vs. best-guess) - do a live run before relying on them.
   ABS's GDP indicator has no mapping at all yet (data key not confirmed).
-- The API has portfolio-construction (Phase 5) and risk (Phase 6) endpoints, but no
-  execution endpoints or persisted positions yet, and nothing here can place an
-  order - those land from Phase 7 onward as their respective engines are built.
-- The dashboard has price/macro/regime/signals/portfolio/risk browsers + system
-  status, not the full 8-page CIO dashboard described in the platform spec - that
-  requires the attribution/reporting layers built in later phases.
+- The API has portfolio-construction (Phase 5), risk (Phase 6) and backtesting
+  (Phase 7) endpoints, but no execution endpoints or persisted positions yet, and
+  nothing here can place an order - those land from Phase 8 onward as their
+  respective engines are built.
+- The dashboard has price/macro/regime/signals/portfolio/risk/backtest browsers +
+  system status, not the full 8-page CIO dashboard described in the platform spec -
+  that requires the attribution/reporting layers built in later phases.
+- `run_backtest` (Phase 7) doesn't model transaction costs, slippage, financing, or
+  intra-period rebalancing, and its `_decide_weights` recomputes the Phase 4
+  composite score for every symbol at every rebalance date - fine for the modest
+  symbol counts/date ranges used so far, but this will be slow over a large universe
+  or a long, finely-rebalanced backtest. Walk-forward validation (Phase 7) checks
+  consistency across historical windows, not out-of-sample generalisation of a
+  fitted model - there's nothing fitted to generalise until Phase 11's ML layer.
 - `Portfolio`/`Position`/`Trade` tables exist (for schema/migration stability) but are
   not yet populated by any business logic - Phase 5/6's weights/sizes/risk numbers
   are computed on demand and returned, never persisted.
@@ -580,11 +650,13 @@ immediately benefit from broader real (non-synthetic) coverage across the 6 coun
 and a real market-data vendor would very likely also carry real earnings/fundamentals
 data that could replace the signal engine's equity valuation proxy.
 
-Phase 7 next: the backtesting engine, walk-forward validation and Monte Carlo
-simulation - putting the signal/portfolio/risk engines built so far through their
-paces against history, before Phase 8 gives them anything real to act on. Widening
+Phase 8 next: the trade lifecycle state machine and investment memo generation -
+the layer that finally turns Phase 5/6/7's proposals/numbers into a persisted
+`Position`/`Trade` row, closing the loop the risk engine's drawdown governor and the
+backtester's realised-P&L calculation have both been waiting on. Widening
 `jlmacro.risk.stress`'s hypothetical-shock mapping (a credit-spread/CDS proxy, an
 equity-vol-percentile proxy) and sourcing real historical prices so
-`apply_historical_scenario` can actually replay 2008/2020/etc. would also directly
-improve Phase 6, whenever a real market-data vendor is wired in (still Phase 2's
-remaining item, below).
+`apply_historical_scenario` can actually replay 2008/2020/etc. - and modelling
+transaction costs/slippage in `jlmacro.backtest.engine` - would also directly improve
+Phases 6 and 7 respectively, whenever a real market-data vendor is wired in (still
+Phase 2's remaining item, below).

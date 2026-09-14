@@ -15,6 +15,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from jlmacro.api.routers import (
+    backtest,
     health,
     instruments,
     macro_data,
@@ -45,6 +46,7 @@ app.include_router(regime.router)
 app.include_router(signals.router)
 app.include_router(portfolio.router)
 app.include_router(risk.router)
+app.include_router(backtest.router)
 
 
 @app.get("/")
