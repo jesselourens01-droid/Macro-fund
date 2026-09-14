@@ -8,7 +8,7 @@ portfolio management, risk management and decision support.
 broker-specific safeguards before any order can be transmitted.** See
 `jlmacro.config.Settings.jlmacro_live_trading_enabled` and `src/jlmacro/execution/`.
 
-## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1) + Phase 7 (v1) + Phase 8 (v1) + Phase 9 (v1)
+## Status: Phase 1 + partial Phase 2 + Phase 3 (v1) + Phase 4 (v1) + Phase 5 (v1) + Phase 6 (v1) + Phase 7 (v1) + Phase 8 (v1) + Phase 9 (v1) + Phase 10 (v1)
 
 **Phase 1** (complete):
 
@@ -183,6 +183,29 @@ fees" below):
 - This is P&L attribution only (which positions made or lost money) - decomposing
   *why* within a position (macro call vs. entry timing vs. noise) is future work.
 
+**Phase 10** (paper trading and broker abstraction, v1; see "Execution" below):
+
+- Broker abstraction (`jlmacro.execution.base.BaseBroker`): the interface every
+  execution venue must implement - `submit_order`/`get_order`/`cancel_order` - so
+  swapping paper for a real venue later never touches calling code.
+- Safeguards (`...execution.safeguards.assert_broker_permitted`): the pre-trade gate
+  every broker construction (not just every order) must pass through. Only `"paper"`
+  is ever permitted while `jlmacro_live_trading_enabled` is unset - the platform
+  spec's "disabled by default" requirement enforced at the point a broker even comes
+  into existence, not just when an order is submitted.
+- `PaperBroker` (`...execution.paper_broker`): the only concrete broker in this
+  codebase. Simulates fills against this platform's own point-in-time price history -
+  a `MARKET` order fills immediately at the latest close; a `LIMIT` order fills at
+  that close only if marketable, else stays `PENDING`; an order for a symbol with no
+  price data is `REJECTED`, never silently dropped. Every order is logged through
+  `jlmacro.utils.audit.log_event`.
+- `...execution.service`: connects the broker to the Phase 8 trade lifecycle - only
+  an actual fill confirms a trade's `entry_price`/`exit_price` and drives
+  `OPEN`/`CLOSED` through the same audited `transition` path every other state
+  change uses; a rejected or pending order leaves the trade untouched.
+- `POST /trades/{id}/open-order`, `/trades/{id}/close-order` API endpoints, and a
+  "Submit via paper broker" control in the Trade Journal dashboard tab.
+
 See `docs/` and the phase list in the original platform specification for what comes
 next. Do not build later phases until this one is reviewed.
 
@@ -210,8 +233,10 @@ src/jlmacro/
   nav/           NAV, high-water mark, drawdown and performance fees (Phase 9),
                  computed on demand from Trade rows.
   attribution/   P&L attribution by symbol/asset class/direction (Phase 9).
-  execution/, reporting/, compliance/
-                 Package placeholders for Phase 10+ - deliberately near-empty for now.
+  execution/     BaseBroker/PaperBroker, pre-trade safeguards, and the service layer
+                 connecting orders to the trade lifecycle (Phase 10).
+  reporting/, compliance/
+                 Package placeholders for Phase 11+ - deliberately near-empty for now.
   utils/         Structured logging, ID generation, audit logging.
 dashboards/      Streamlit app (presentation layer only - no business logic).
 scripts/         Operational scripts (synthetic data generator).
@@ -704,6 +729,46 @@ curl "http://localhost:8000/nav/attribution?portfolio_id=1&group_by=asset_class"
   noise, as `jlmacro.trades.review`'s docstring flags as still missing) needs more
   closed-trade history than this platform has generated yet.
 
+## Execution (Phase 10)
+
+```bash
+curl -X POST "http://localhost:8000/trades/<trade_id>/open-order" -H "Content-Type: application/json" \
+  -d '{"quantity": 100, "as_of": "2026-08-31", "actor": "jesse.lourens"}'
+curl -X POST "http://localhost:8000/trades/<trade_id>/close-order" -H "Content-Type: application/json" \
+  -d '{"quantity": 100, "as_of": "2026-08-31", "actor": "jesse.lourens"}'
+```
+
+- **`BaseBroker`** (`jlmacro.execution.base`) is the interface - `submit_order`,
+  `get_order`, `cancel_order` - every execution venue must implement. Nothing outside
+  `jlmacro.execution` talks to a broker any other way, so a future real venue slots
+  in without touching calling code.
+- **Safeguards** (`...execution.safeguards.assert_broker_permitted`) run at broker
+  *construction*, not just at order submission: `PaperBroker.__init__` calls it
+  itself, so a live broker can never come into existence in a process where
+  `jlmacro_live_trading_enabled` is unset - there's no path around it by skipping a
+  check before submitting. A live broker also requires a named human actor to
+  construct, never an automated caller. As of this phase there's no live broker to
+  actually reject in practice (`PaperBroker` is the only concrete implementation),
+  but any future one is required to go through this gate from day one.
+- **`PaperBroker`** (`...execution.paper_broker`) simulates fills against this
+  platform's own point-in-time price history - there is no real order book, only
+  daily closes, so the fill model is deliberately simple and documented as such: a
+  `MARKET` order fills immediately at the latest close; a `LIMIT` order fills at that
+  same close if marketable (never at the limit price itself, since a real fill would
+  happen at the prevailing price once marketable); a non-marketable limit stays
+  `PENDING` forever in this v1 (there's no order book to re-check it against later);
+  a symbol with no price data as of the order date is `REJECTED`. Every order -
+  filled, rejected, pending, or cancelled - is logged through
+  `jlmacro.utils.audit.log_event`.
+- **`...execution.service`** connects the broker to the Phase 8 trade lifecycle:
+  `open_trade_via_broker` submits a market order sized from an `APPROVED` trade and,
+  only on an actual fill, confirms the trade's real `entry_price` (rather than
+  trusting whatever was estimated at idea time) and drives it to `OPEN` through the
+  same audited `transition` path every other state change uses;
+  `close_trade_via_broker` is the mirror image for `OPEN`/`REDUCE` -> `CLOSED`. A
+  rejected or still-`PENDING` order leaves the trade exactly where it was - nothing
+  here ever half-opens or half-closes a trade.
+
 ## Known limitations
 
 - Market-data providers (a real price vendor) and ECB/BoE/BoJ/World Bank/IMF macro
@@ -713,18 +778,25 @@ curl "http://localhost:8000/nav/attribution?portfolio_id=1&group_by=asset_class"
   documentation-verified vs. best-guess) - do a live run before relying on them.
   ABS's GDP indicator has no mapping at all yet (data key not confirmed).
 - The API has portfolio-construction (Phase 5), risk (Phase 6), backtesting
-  (Phase 7), trade-lifecycle (Phase 8) and NAV/attribution (Phase 9) endpoints, but
-  no execution endpoints yet, and nothing here can place a real order - that lands
-  in Phase 10's paper broker.
+  (Phase 7), trade-lifecycle (Phase 8), NAV/attribution (Phase 9) and paper-execution
+  (Phase 10) endpoints - but no *real* broker, and live trading is disabled by
+  default and stays that way until an actual live broker is built and explicitly
+  enabled with human sign-off.
 - The dashboard has price/macro/regime/signals/portfolio/risk/backtest/trade-journal/
   performance browsers + system status, not the full 8-page CIO dashboard described
   in the platform spec - some of it (Positions specifically) still needs a real
   `Position` table (see below).
-- The `Position` table still isn't written to - opening a `Trade` doesn't update a
-  `Position` row (quantity/average price); NAV (Phase 9) is computed straight from
-  `Trade` rows instead, sidestepping the need for one so far. Writing to `Position`
-  is natural Phase 10 work once a paper broker is actually filling orders and needs
-  somewhere to track net holdings per instrument.
+- The `Position` table still isn't written to - `PaperBroker` fills orders and
+  `jlmacro.execution.service` updates the `Trade` row's price/status, but nothing
+  aggregates that into a `Position` (net quantity/average price per instrument);
+  NAV (Phase 9) is computed straight from `Trade` rows instead, sidestepping the
+  need for one so far. Writing to `Position` is natural next work once something
+  actually needs aggregate holdings (e.g. a real portfolio-level exposure check
+  against live positions, rather than proposed weights).
+- `PaperBroker`'s fill model is deliberately simple (see "Execution" above): no real
+  order book, a `PENDING` limit order is never re-checked against a later price, and
+  there's no partial-fill or slippage model. It's paper trading against synthetic (or
+  eventually real) daily closes, not a market simulator.
 - Phase 9's P&L attribution is P&L-only (which positions made or lost money) -
   decomposing *why* within one position (macro call vs. entry timing vs. noise, as
   `jlmacro.trades.review`'s docstring flags) needs more closed-trade history than
@@ -789,17 +861,19 @@ immediately benefit from broader real (non-synthetic) coverage across the 6 coun
 and a real market-data vendor would very likely also carry real earnings/fundamentals
 data that could replace the signal engine's equity valuation proxy.
 
-Phase 10 next: paper trading and the broker abstraction (`BaseBroker`/`PaperBroker`) -
-the layer that finally fills an order and needs somewhere to track net holdings,
-which is the natural moment to start writing to the still-empty `Position` table.
-Actually wiring `jlmacro.nav.engine.current_drawdown` into
+Phase 11 next: the ML research layer (logistic/elastic-net/random-forest/gradient-
+boosted models with walk-forward validation against a baseline) - the first place in
+this platform anything is actually *fitted*, as opposed to the rule-based engines
+built so far. Worth doing before or alongside it: actually wiring
+`jlmacro.nav.engine.current_drawdown` into
 `jlmacro.risk.drawdown.risk_budget_fraction_for_drawdown` (and that, in turn, into
-the Phase 8 lifecycle's `APPROVED`/`OPEN` transitions) would close the loop the risk
-engine has been waiting on since Phase 6 - worth doing alongside or just before
-Phase 10, since a paper broker is exactly where that gate matters. Widening
-`jlmacro.risk.stress`'s hypothetical-shock mapping (a credit-spread/CDS proxy, an
-equity-vol-percentile proxy) and sourcing real historical prices so
-`apply_historical_scenario` can actually replay 2008/2020/etc. - and modelling
-transaction costs/slippage in `jlmacro.backtest.engine` - would also directly improve
-Phases 6 and 7 respectively, whenever a real market-data vendor is wired in (still
-Phase 2's remaining item, below).
+the Phase 8 lifecycle's `APPROVED`/`OPEN` transitions, now that Phase 10 gives it
+somewhere real to check before an order actually goes out) would close the loop the
+risk engine has been waiting on since Phase 6. Writing `Position` rows on fill
+(`jlmacro.execution.service`) is the natural next step once something needs
+aggregate net holdings. Widening `jlmacro.risk.stress`'s hypothetical-shock mapping
+(a credit-spread/CDS proxy, an equity-vol-percentile proxy) and sourcing real
+historical prices so `apply_historical_scenario` can actually replay 2008/2020/etc. -
+and modelling transaction costs/slippage in `jlmacro.backtest.engine` - would also
+directly improve Phases 6 and 7 respectively, whenever a real market-data vendor is
+wired in (still Phase 2's remaining item, below).

@@ -406,6 +406,33 @@ class AttributionOut(BaseModel):
     breakdown: dict[str, float]
 
 
+class OpenTradeOrderRequest(BaseModel):
+    quantity: float
+    as_of: dt.date
+    actor: str
+
+
+class CloseTradeOrderRequest(BaseModel):
+    quantity: float
+    as_of: dt.date
+    actor: str
+
+
+class OrderOut(BaseModel):
+    order_id: str
+    symbol: str
+    side: str
+    quantity: float
+    order_type: str
+    status: str
+    filled_quantity: float
+    filled_price: float | None
+    rejected_reason: str | None
+    trade_id: str | None
+    submitted_at: dt.datetime
+    filled_at: dt.datetime | None
+
+
 class HealthOut(BaseModel):
     status: str
     environment: str

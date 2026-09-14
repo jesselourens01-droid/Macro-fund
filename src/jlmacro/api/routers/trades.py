@@ -17,7 +17,10 @@ from sqlalchemy.orm import Session
 
 from jlmacro.api.deps import get_db
 from jlmacro.api.schemas import (
+    CloseTradeOrderRequest,
     InvestmentMemoOut,
+    OpenTradeOrderRequest,
+    OrderOut,
     PortfolioCreateRequest,
     PortfolioOut,
     PostTradeReviewOut,
@@ -26,6 +29,9 @@ from jlmacro.api.schemas import (
     TradeOut,
     TradeTransitionRequest,
 )
+from jlmacro.execution.base import OrderResult
+from jlmacro.execution.paper_broker import PaperBroker
+from jlmacro.execution.service import close_trade_via_broker, open_trade_via_broker
 from jlmacro.models.instrument import Instrument
 from jlmacro.models.portfolio import Portfolio, Trade
 from jlmacro.trades.lifecycle import InvalidTransitionError, create_trade_idea, transition
@@ -176,3 +182,54 @@ def get_trade_review(trade_id: str, db: Session = Depends(get_db)) -> PostTradeR
         thesis_direction_correct=review.thesis_direction_correct,
         notes=review.notes,
     )
+
+
+def _order_to_out(result: OrderResult) -> OrderOut:
+    return OrderOut(
+        order_id=result.order_id,
+        symbol=result.request.symbol,
+        side=result.request.side.value,
+        quantity=result.request.quantity,
+        order_type=result.request.order_type.value,
+        status=result.status.value,
+        filled_quantity=result.filled_quantity,
+        filled_price=result.filled_price,
+        rejected_reason=result.rejected_reason,
+        trade_id=result.request.trade_id,
+        submitted_at=result.submitted_at,
+        filled_at=result.filled_at,
+    )
+
+
+@router.post("/trades/{trade_id}/open-order", response_model=OrderOut)
+def post_open_trade_order(
+    trade_id: str, request: OpenTradeOrderRequest, db: Session = Depends(get_db)
+) -> OrderOut:
+    """Submits a market order via the paper broker (the only broker this codebase
+    has - live trading is disabled by default) to open an APPROVED trade. Only an
+    actual fill advances the trade's status; a rejected order leaves it untouched.
+    """
+    trade = _get_trade_or_404(db, trade_id)
+    broker = PaperBroker(db)
+    try:
+        result = open_trade_via_broker(
+            db, broker, trade, quantity=request.quantity, as_of=request.as_of, actor=request.actor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _order_to_out(result)
+
+
+@router.post("/trades/{trade_id}/close-order", response_model=OrderOut)
+def post_close_trade_order(
+    trade_id: str, request: CloseTradeOrderRequest, db: Session = Depends(get_db)
+) -> OrderOut:
+    trade = _get_trade_or_404(db, trade_id)
+    broker = PaperBroker(db)
+    try:
+        result = close_trade_via_broker(
+            db, broker, trade, quantity=request.quantity, as_of=request.as_of, actor=request.actor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _order_to_out(result)

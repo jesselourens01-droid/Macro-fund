@@ -25,6 +25,8 @@ from jlmacro.backtest.engine import run_backtest
 from jlmacro.backtest.monte_carlo import bootstrap_terminal_nav
 from jlmacro.config import get_settings, load_yaml_config
 from jlmacro.database.session import session_scope
+from jlmacro.execution.paper_broker import PaperBroker
+from jlmacro.execution.service import close_trade_via_broker, open_trade_via_broker
 from jlmacro.models.enums import TradeDirection, TradeStatus
 from jlmacro.models.instrument import Instrument
 from jlmacro.models.portfolio import Portfolio, Trade
@@ -951,7 +953,7 @@ with tab_journal:
                 )
                 allowed_next = sorted(s.value for s in ALLOWED_TRANSITIONS[selected_trade.status])
 
-            mcol1, mcol2, mcol3 = st.columns(3)
+            mcol1, mcol2, mcol3, mcol4 = st.columns(4)
             with mcol1:
                 if allowed_next:
                     next_status = st.selectbox("Move to", allowed_next, key="journal_next_status")
@@ -994,6 +996,57 @@ with tab_journal:
                         st.success("Trade closed.")
 
             with mcol3:
+                st.caption("Execute (paper broker)")
+                if selected_trade.status == TradeStatus.APPROVED:
+                    order_qty = st.number_input(
+                        "Quantity", min_value=0.0, value=100.0, key="journal_open_order_qty"
+                    )
+                    order_actor = st.text_input("Actor", key="journal_open_order_actor")
+                    if st.button("Submit opening order", key="journal_submit_open_order"):
+                        with session_scope() as session:
+                            trade_to_open = session.scalar(
+                                select(Trade).where(Trade.trade_id == selected_trade_id)
+                            )
+                            broker = PaperBroker(session)
+                            result = open_trade_via_broker(
+                                session,
+                                broker,
+                                trade_to_open,
+                                quantity=order_qty,
+                                as_of=dt.datetime.now(tz=dt.UTC).date(),
+                                actor=order_actor or "system",
+                            )
+                        if result.status.value == "filled":
+                            st.success(f"Filled at {result.filled_price:,.4f}.")
+                        else:
+                            st.warning(f"Order {result.status.value}: {result.rejected_reason}")
+                elif selected_trade.status in (TradeStatus.OPEN, TradeStatus.REDUCE):
+                    order_qty = st.number_input(
+                        "Quantity", min_value=0.0, value=100.0, key="journal_close_order_qty"
+                    )
+                    order_actor = st.text_input("Actor", key="journal_close_order_actor")
+                    if st.button("Submit closing order", key="journal_submit_close_order"):
+                        with session_scope() as session:
+                            trade_to_close_via_broker = session.scalar(
+                                select(Trade).where(Trade.trade_id == selected_trade_id)
+                            )
+                            broker = PaperBroker(session)
+                            result = close_trade_via_broker(
+                                session,
+                                broker,
+                                trade_to_close_via_broker,
+                                quantity=order_qty,
+                                as_of=dt.datetime.now(tz=dt.UTC).date(),
+                                actor=order_actor or "system",
+                            )
+                        if result.status.value == "filled":
+                            st.success(f"Filled at {result.filled_price:,.4f}.")
+                        else:
+                            st.warning(f"Order {result.status.value}: {result.rejected_reason}")
+                else:
+                    st.caption("No order to submit for this status.")
+
+            with mcol4:
                 st.caption("View")
                 if st.button("Show investment memo", key="journal_show_memo"):
                     with session_scope() as session:
