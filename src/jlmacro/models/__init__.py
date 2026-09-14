@@ -10,11 +10,19 @@ from Phase 3 onward - not to be confused with the ORM models here.
 """
 
 from jlmacro.models.audit import AuditLogEntry
-from jlmacro.models.enums import AssetClass, Frequency, MacroCategory, TradeDirection, TradeStatus
+from jlmacro.models.enums import (
+    AssetClass,
+    Frequency,
+    MacroCategory,
+    RegimeLabel,
+    TradeDirection,
+    TradeStatus,
+)
 from jlmacro.models.instrument import Instrument
 from jlmacro.models.macro_data import MacroDataPoint
 from jlmacro.models.market_data import MarketDataPoint
 from jlmacro.models.portfolio import Portfolio, Position, Trade
+from jlmacro.models.regime_snapshot import RegimeSnapshot
 
 __all__ = [
     "AssetClass",
@@ -26,6 +34,8 @@ __all__ = [
     "MarketDataPoint",
     "Portfolio",
     "Position",
+    "RegimeLabel",
+    "RegimeSnapshot",
     "Trade",
     "TradeDirection",
     "TradeStatus",

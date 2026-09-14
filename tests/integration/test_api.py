@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 
 from jlmacro.data.loader import seed_instruments, seed_macro_data, seed_market_data
+from jlmacro.models.regime import compute_and_persist_snapshot
 
 
 def test_health_endpoint(client):
@@ -68,3 +69,38 @@ def test_macro_data_endpoint_point_in_time(db_session, client):
     resp = client.get("/macro-data/US/CPI_HEADLINE", params={"as_of": "2000-01-01"})
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_regime_endpoints(db_session, client):
+    resp = client.get("/regime/US")
+    assert resp.status_code == 404
+
+    seed_instruments(db_session)
+    seed_macro_data(db_session, start=dt.date(2020, 1, 1), end=dt.date(2026, 6, 1))
+    compute_and_persist_snapshot(db_session, "US", as_of=dt.date(2026, 6, 30))
+
+    resp = client.get("/regime/US")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["country"] == "US"
+    assert body["current"] in {
+        "goldilocks",
+        "reflation",
+        "stagflation",
+        "deflation",
+        "recovery",
+        "late_cycle",
+        "risk_off",
+        "liquidity_crisis",
+    }
+    assert 0.0 <= body["confidence"] <= 1.0
+
+    resp = client.get("/regime/US/history")
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+    resp = client.get("/regime")
+    assert resp.status_code == 200
+    matrix = resp.json()
+    assert matrix["US"] is not None
+    assert matrix["AU"] is None

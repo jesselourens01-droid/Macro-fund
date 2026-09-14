@@ -1,0 +1,53 @@
+# Macro regime engine parameters (src/jlmacro/models/regime/). Kept configurable so
+# the fund can retune thresholds without touching code, per the platform's
+# "configuration over hard-coded assumptions" principle. The regime *decision tree*
+# itself (which combination of buckets maps to which of the 8 regime labels) lives in
+# code (src/jlmacro/models/regime/engine.py) rather than here, since it's inherently a
+# small set of named cases better read as code than as a generic rule DSL - but every
+# numeric threshold that decision tree consults is defined here.
+
+scoring:
+  # Trailing window (in days) used to compute each indicator's rolling z-score. Only
+  # observations with a vintage date (revision_date, falling back to release_date) on
+  # or before the as-of date are ever included - see scoring.py's point-in-time
+  # discipline note.
+  zscore_window_days: 1825  # ~5 years
+  # Minimum number of point-in-time observations required before a z-score is
+  # considered reliable; fewer than this returns None (indicator excluded from its
+  # category's composite for that as-of date) rather than a noisy estimate.
+  min_observations: 12
+  # Window (in periods, i.e. observations) used to measure an indicator's momentum -
+  # the change in its z-score used by the recovery/late-cycle regime rules below.
+  momentum_lookback_periods: 3
+
+# Continuous composite category score -> discrete -2..+2 bucket. Thresholds are on the
+# z-score-like composite (mean of each category's member indicators' signed z-scores).
+buckets:
+  strong_negative_max: -1.5   # score <  strong_negative_max          -> -2
+  negative_max: -0.5          # strong_negative_max <= score < this   -> -1
+  positive_min: 0.5           # negative_max <= score < positive_min  ->  0
+  strong_positive_min: 1.5    # positive_min <= score < this          -> +1, else +2
+
+# Thresholds consulted by the regime decision tree in engine.py.
+regime_rules:
+  liquidity_crisis_financial_conditions_max: -2   # financial_conditions_bucket <= this
+  liquidity_crisis_growth_max: -1                 # AND growth_bucket <= this -> LIQUIDITY_CRISIS
+  risk_off_financial_conditions_max: -1           # financial_conditions_bucket <= this -> RISK_OFF
+  recovery_growth_max: 0                          # growth_bucket <= this
+  recovery_momentum_min: 0.0                      # AND growth momentum > this
+  recovery_inflation_max: 0                       # AND inflation_bucket <= this -> RECOVERY
+  late_cycle_growth_min: 1                        # growth_bucket >= this
+  late_cycle_momentum_max: 0.0                     # AND growth momentum < this
+  late_cycle_monetary_policy_min: 1               # AND monetary_policy_bucket >= this -> LATE_CYCLE
+  # Otherwise: growth_bucket >= 0 and inflation_bucket <= 0 -> GOLDILOCKS
+  #            growth_bucket >= 0 and inflation_bucket >= 1 -> REFLATION
+  #            growth_bucket <= -1 and inflation_bucket >= 1 -> STAGFLATION
+  #            growth_bucket <= -1 and inflation_bucket <= 0 -> DEFLATION
+
+confidence:
+  # Distance (in z-score units) from a bucket boundary at which classification
+  # confidence saturates to 1.0; a score sitting exactly on a boundary scores ~0.
+  # This is a transparent distance-based heuristic, not a probabilistic model - see
+  # engine.py's docstring. Superseding it with a fitted (HMM/logistic) confidence is
+  # explicitly future work (the platform spec's Phase 3 notes "later add HMM/logistic").
+  saturation_distance: 1.0

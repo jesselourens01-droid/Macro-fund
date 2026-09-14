@@ -1,15 +1,16 @@
 """FastAPI application entrypoint.
 
-Phase 1 exposes read-only endpoints over the seeded instrument universe and synthetic
-PIT data so the dashboard (and future integrations) have something real to consume.
-Portfolio/risk/execution endpoints are added in later phases behind the same app.
+Phase 1/2 exposes read-only endpoints over the seeded instrument universe, PIT market/
+macro data, and (Phase 3) computed macro regime snapshots, so the dashboard (and future
+integrations) have something real to consume. Portfolio/risk/execution endpoints are
+added in later phases behind the same app.
 """
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 
-from jlmacro.api.routers import health, instruments, macro_data, market_data
+from jlmacro.api.routers import health, instruments, macro_data, market_data, regime
 from jlmacro.config import get_settings
 from jlmacro.utils.logging import configure_logging
 
@@ -27,6 +28,7 @@ app.include_router(health.router)
 app.include_router(instruments.router)
 app.include_router(market_data.router)
 app.include_router(macro_data.router)
+app.include_router(regime.router)
 
 
 @app.get("/")

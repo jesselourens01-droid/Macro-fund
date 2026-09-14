@@ -29,6 +29,17 @@ class MacroCategory(str, enum.Enum):
     FINANCIAL_CONDITIONS = "financial_conditions"
 
 
+class RegimeLabel(str, enum.Enum):
+    GOLDILOCKS = "goldilocks"
+    REFLATION = "reflation"
+    STAGFLATION = "stagflation"
+    DEFLATION = "deflation"
+    RECOVERY = "recovery"
+    LATE_CYCLE = "late_cycle"
+    RISK_OFF = "risk_off"
+    LIQUIDITY_CRISIS = "liquidity_crisis"
+
+
 class TradeStatus(str, enum.Enum):
     IDEA = "idea"
     WATCHLIST = "watchlist"

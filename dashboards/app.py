@@ -14,15 +14,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from jlmacro.config import get_settings
+from jlmacro.config import get_settings, load_yaml_config
 from jlmacro.database.session import session_scope
 from jlmacro.reporting.queries import (
     list_instruments,
     macro_data_history,
     market_data_history,
+    regime_history,
+    regime_matrix,
     system_status,
 )
 
@@ -53,7 +56,9 @@ if instruments_df.empty:
     )
     st.stop()
 
-tab_prices, tab_macro, tab_universe = st.tabs(["Prices", "Macro Indicators", "Asset Universe"])
+tab_prices, tab_macro, tab_regime, tab_universe = st.tabs(
+    ["Prices", "Macro Indicators", "Macro Regime", "Asset Universe"]
+)
 
 with tab_prices:
     st.subheader("Instrument price history (synthetic)")
@@ -148,6 +153,101 @@ with tab_macro:
         )
         st.plotly_chart(fig, width="stretch")
         st.dataframe(macro_df.sort_values("effective_date", ascending=False), width="stretch")
+
+with tab_regime:
+    st.subheader("Country regime matrix")
+    st.caption(
+        "Growth / Inflation / Monetary Policy / Financial Conditions buckets (-2..+2) "
+        "and the classified regime for each country's latest snapshot. Run "
+        "`python scripts/compute_regime_snapshots.py` to (re)compute these from "
+        "current macro data."
+    )
+
+    countries = load_yaml_config("macro_indicators").get("countries", [])
+    with session_scope() as session:
+        matrix_df = regime_matrix(session, countries)
+
+    if matrix_df.empty:
+        st.info(
+            "No regime snapshots yet. Run `python scripts/compute_regime_snapshots.py` "
+            "after seeding macro data."
+        )
+    else:
+        display_df = matrix_df.set_index("country")[
+            [
+                "regime",
+                "confidence",
+                "growth",
+                "inflation",
+                "monetary_policy",
+                "financial_conditions",
+            ]
+        ]
+
+        def _bucket_color(value: object) -> str:
+            # Manual red(-2)->white(0)->green(+2) scale - avoids adding matplotlib
+            # just for pandas Styler.background_gradient.
+            if not isinstance(value, int | float) or pd.isna(value):
+                return ""
+            clamped = max(-2.0, min(2.0, float(value)))
+            if clamped >= 0:
+                t = clamped / 2.0
+                r, g, b = (
+                    int(255 * (1 - t) + 26 * t),
+                    int(255 * (1 - t) + 152 * t),
+                    int(255 * (1 - t) + 80 * t),
+                )
+            else:
+                t = -clamped / 2.0
+                r, g, b = (
+                    int(255 * (1 - t) + 211 * t),
+                    int(255 * (1 - t) + 47 * t),
+                    int(255 * (1 - t) + 47 * t),
+                )
+            return f"background-color: rgb({r},{g},{b})"
+
+        bucket_cols = ["growth", "inflation", "monetary_policy", "financial_conditions"]
+        styled = display_df.style.map(_bucket_color, subset=bucket_cols).format(
+            {"confidence": "{:.0%}"}
+        )
+        st.dataframe(styled, width="stretch")
+
+        st.divider()
+        st.subheader("Regime history for one country")
+        selected_country = st.selectbox("Country", countries, key="regime_country")
+
+        with session_scope() as session:
+            history_df = regime_history(session, selected_country)
+
+        if history_df.empty:
+            st.info(f"No regime snapshots for {selected_country} yet.")
+        else:
+            fig = go.Figure()
+            for column, label in [
+                ("growth_score", "Growth"),
+                ("inflation_score", "Inflation"),
+                ("monetary_policy_score", "Monetary Policy"),
+                ("financial_conditions_score", "Financial Conditions"),
+            ]:
+                fig.add_trace(
+                    go.Scatter(
+                        x=history_df["as_of"], y=history_df[column], mode="lines", name=label
+                    )
+                )
+            fig.update_layout(
+                title=f"{selected_country} category scores",
+                xaxis_title="As of",
+                yaxis_title="Composite z-score",
+                height=380,
+            )
+            st.plotly_chart(fig, width="stretch")
+
+            latest = history_df.iloc[-1]
+            m1, m2 = st.columns(2)
+            m1.metric("Current regime", latest["regime"].replace("_", " ").title())
+            m2.metric("Confidence", f"{latest['confidence']:.0%}")
+
+            st.dataframe(history_df.sort_values("as_of", ascending=False), width="stretch")
 
 with tab_universe:
     st.subheader("Configured asset universe")

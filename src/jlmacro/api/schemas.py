@@ -8,7 +8,7 @@ import datetime as dt
 
 from pydantic import BaseModel, ConfigDict
 
-from jlmacro.models.enums import AssetClass, Frequency, MacroCategory
+from jlmacro.models.enums import AssetClass, Frequency, MacroCategory, RegimeLabel
 
 
 class InstrumentOut(BaseModel):
@@ -52,6 +52,34 @@ class MacroDataPointOut(BaseModel):
     original_value: float | None
     revised_value: float | None
     source: str
+
+
+class RegimeSnapshotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    country: str
+    as_of: dt.date
+    growth_score: float | None
+    growth_bucket: int | None
+    inflation_score: float | None
+    inflation_bucket: int | None
+    monetary_policy_score: float | None
+    monetary_policy_bucket: int | None
+    financial_conditions_score: float | None
+    financial_conditions_bucket: int | None
+    regime_label: RegimeLabel
+    regime_confidence: float
+    model_version: str
+
+
+class RegimeStatusOut(BaseModel):
+    country: str
+    current: RegimeLabel
+    confidence: float
+    as_of: dt.date
+    previous: RegimeLabel | None
+    duration_periods: int
+    transition_probabilities: dict[str, float]
 
 
 class HealthOut(BaseModel):

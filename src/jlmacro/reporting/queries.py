@@ -17,6 +17,7 @@ from jlmacro.models.audit import AuditLogEntry
 from jlmacro.models.instrument import Instrument
 from jlmacro.models.macro_data import MacroDataPoint
 from jlmacro.models.market_data import MarketDataPoint
+from jlmacro.models.regime_snapshot import RegimeSnapshot
 
 
 def list_instruments(session: Session) -> pd.DataFrame:
@@ -86,6 +87,60 @@ def macro_data_history(session: Session, country: str, indicator_code: str) -> p
             "original_value",
             "revised_value",
         ],
+    )
+
+
+def regime_matrix(session: Session, countries: list[str]) -> pd.DataFrame:
+    """Latest regime snapshot for each of the given countries - one row per country,
+    missing countries simply absent (rather than a row of nulls) so the caller decides
+    how to render "no data yet".
+    """
+    rows = []
+    for country in countries:
+        stmt = (
+            select(RegimeSnapshot)
+            .where(RegimeSnapshot.country == country)
+            .order_by(RegimeSnapshot.as_of.desc())
+            .limit(1)
+        )
+        snapshot = session.scalar(stmt)
+        if snapshot is None:
+            continue
+        rows.append(
+            {
+                "country": country,
+                "as_of": snapshot.as_of,
+                "regime": snapshot.regime_label.value,
+                "confidence": snapshot.regime_confidence,
+                "growth": snapshot.growth_bucket,
+                "inflation": snapshot.inflation_bucket,
+                "monetary_policy": snapshot.monetary_policy_bucket,
+                "financial_conditions": snapshot.financial_conditions_bucket,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def regime_history(session: Session, country: str) -> pd.DataFrame:
+    stmt = (
+        select(RegimeSnapshot)
+        .where(RegimeSnapshot.country == country)
+        .order_by(RegimeSnapshot.as_of)
+    )
+    rows = session.scalars(stmt).all()
+    return pd.DataFrame(
+        [
+            {
+                "as_of": r.as_of,
+                "regime": r.regime_label.value,
+                "confidence": r.regime_confidence,
+                "growth_score": r.growth_score,
+                "inflation_score": r.inflation_score,
+                "monetary_policy_score": r.monetary_policy_score,
+                "financial_conditions_score": r.financial_conditions_score,
+            }
+            for r in rows
+        ]
     )
 
 

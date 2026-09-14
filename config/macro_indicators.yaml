@@ -9,6 +9,17 @@ countries:
   - AU
   - CN
 
+# Each indicator may set `invert: true` to flip its sign before it feeds into its
+# category's composite score (src/jlmacro/models/regime/scoring.py). Sign convention
+# per category, higher composite score always means:
+#   growth               -> stronger/above-trend growth
+#   inflation             -> more inflationary pressure
+#   monetary_policy       -> tighter/more restrictive policy
+#   financial_conditions  -> looser/easier financial conditions
+# Most indicators already point the right way raw (e.g. a higher PMI is unambiguously
+# "more growth"). `invert: true` is only needed where a higher raw value means the
+# *opposite* of the category's positive direction - e.g. a wider credit spread means
+# *tighter* financial conditions, so CREDIT_SPREAD_HY must be inverted before summing.
 indicators:
   growth:
     - code: PMI_MFG
@@ -61,6 +72,9 @@ indicators:
     - code: YIELD_CURVE_SLOPE
       name: "2s10s Yield Curve Slope"
       frequency: daily
+      # A flatter/inverted curve signals tighter policy (or tightening priced in), so
+      # a higher slope value must flip sign to point the same way as "tighter".
+      invert: true
     - code: RATE_EXPECTATIONS
       name: "Rate Expectations (OIS-implied)"
       frequency: daily
@@ -69,15 +83,19 @@ indicators:
     - code: CREDIT_SPREAD_IG
       name: "Investment Grade Credit Spread"
       frequency: daily
+      invert: true  # wider spread = tighter conditions
     - code: CREDIT_SPREAD_HY
       name: "High Yield Credit Spread"
       frequency: daily
+      invert: true  # wider spread = tighter conditions
     - code: EQUITY_VOL
       name: "Equity Implied Volatility"
       frequency: daily
+      invert: true  # higher vol = tighter/more stressed conditions
     - code: BOND_VOL
       name: "Bond Implied Volatility (MOVE-style)"
       frequency: daily
+      invert: true  # higher vol = tighter/more stressed conditions
     - code: MONEY_SUPPLY
       name: "Broad Money Supply Growth"
       frequency: monthly

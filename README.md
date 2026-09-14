@@ -8,7 +8,7 @@ portfolio management, risk management and decision support.
 broker-specific safeguards before any order can be transmitted.** See
 `jlmacro.config.Settings.jlmacro_live_trading_enabled` and `src/jlmacro/execution/`.
 
-## Status: Phase 1 + partial Phase 2
+## Status: Phase 1 + partial Phase 2 + Phase 3 (v1)
 
 **Phase 1** (complete):
 
@@ -36,6 +36,22 @@ data-quality-driven ingestion pipeline into the regime engine are still to come)
   current values (RBA, ABS) with local diff-based revision detection
 - `scripts/ingest_real_macro_data.py` to run real ingestion
 
+**Phase 3** (macro regime engine, v1 - transparent rule-based, per the spec's
+"transparent models before complex models" principle; HMM/logistic/gradient-boosted
+classifiers are explicitly future work):
+
+- Point-in-time indicator scoring (`jlmacro.models.regime.scoring`): rolling z-scores
+  and momentum computed only from data that was actually knowable as of a given date
+- Category score aggregation + an 8-label regime classifier (`jlmacro.models.regime.engine`):
+  Goldilocks / Reflation / Stagflation / Deflation / Recovery / Late Cycle / Risk-Off /
+  Liquidity Crisis, plus a distance-from-boundary confidence heuristic
+- Persisted `RegimeSnapshot` history per country, with duration/previous-regime/
+  empirical-transition-probability queries
+- `GET /regime`, `/regime/{country}`, `/regime/{country}/history` API endpoints
+- A "Macro Regime" dashboard tab: the country x category matrix from the platform spec's
+  Page 2, plus a per-country score history chart
+- `scripts/compute_regime_snapshots.py` to (re)compute snapshots from current data
+
 See `docs/` and the phase list in the original platform specification for what comes
 next. Do not build later phases until this one is reviewed.
 
@@ -51,8 +67,9 @@ src/jlmacro/
                  FRED/RBA/ABS macro adapters and a data-quality module (Phase 2).
   database/      SQLAlchemy engine/session/declarative base.
   models/        ORM models: Instrument, MarketDataPoint, MacroDataPoint, AuditLogEntry,
-                 Portfolio/Position/Trade. models/{macro,signals,ml,regime} hold future
-                 *statistical* model definitions (Phase 3+), not ORM models.
+                 Portfolio/Position/Trade, RegimeSnapshot. models/regime holds the
+                 macro regime engine itself (Phase 3, transparent v1); models/{macro,
+                 signals,ml} hold future *statistical* model definitions, not ORM models.
   portfolio/, risk/, execution/, backtest/, attribution/, reporting/, compliance/
                  Package placeholders for Phase 5+ - deliberately near-empty for now.
   utils/         Structured logging, ID generation, audit logging.
@@ -111,18 +128,21 @@ alembic upgrade head
 # 5. Seed synthetic data (no external API keys required)
 python scripts/generate_synthetic_data.py
 
-# 6. Run the API
+# 6. Compute macro regime snapshots from that data
+python scripts/compute_regime_snapshots.py
+
+# 7. Run the API
 uvicorn jlmacro.api.main:app --reload
 # -> http://localhost:8000/docs
 
-# 7. Run the dashboard (in another terminal)
+# 8. Run the dashboard (in another terminal)
 streamlit run dashboards/app.py
 # -> http://localhost:8501
 ```
 
 A `Makefile` wraps the common commands: `make install`, `make migrate`, `make seed`,
-`make ingest-fred`, `make ingest-rba`, `make ingest-abs`, `make api`, `make dashboard`,
-`make test`, `make lint`, `make format`, `make typecheck`.
+`make ingest-fred`, `make ingest-rba`, `make ingest-abs`, `make regime`, `make api`,
+`make dashboard`, `make test`, `make lint`, `make format`, `make typecheck`.
 
 ## Running tests
 
@@ -244,6 +264,45 @@ any issues (missing observations, duplicate vintages, stale/impossible values,
 outliers, revision mismatches); a batch containing an error-level issue is rejected
 rather than inserted.
 
+## Macro regime engine (Phase 3)
+
+For each of the 6 configured countries (`config/macro_indicators.yaml`'s `countries`
+list), the engine produces four category scores - Growth, Inflation, Monetary Policy,
+Financial Conditions - each as both a continuous composite z-score and a discrete
+-2..+2 bucket, then classifies one of 8 regimes: Goldilocks, Reflation, Stagflation,
+Deflation, Recovery, Late Cycle, Risk-Off, Liquidity Crisis.
+
+```bash
+python scripts/compute_regime_snapshots.py --countries US,AU --start 2023-01-01 --end 2026-09-01
+# or: make regime
+```
+
+- **Point-in-time scoring** (`jlmacro.models.regime.scoring`): every z-score/momentum
+  is computed only from the vintage of each observation that was actually knowable as
+  of the `as_of` date - the same discipline as the rest of the platform, just applied
+  to derived statistics instead of raw values. `tests/unit/test_regime_scoring.py`
+  proves a later revision can't leak into an earlier `as_of`'s z-score.
+- **Category aggregation** (`jlmacro.models.regime.engine.compute_category_score`):
+  the mean of a category's indicator z-scores, each optionally sign-flipped per
+  `config/macro_indicators.yaml`'s per-indicator `invert` flag (e.g. a wider credit
+  spread means *tighter*, not looser, financial conditions - see that file's comment
+  on the sign convention). An indicator with too little history yet, or not tracked
+  for a given country, is excluded from the average rather than treated as zero.
+- **Regime classification** (`classify_regime`): a transparent, fully-readable decision
+  tree over the four buckets (plus growth momentum, for the Recovery/Late-Cycle
+  turning-point cases) - not a fitted model. This is deliberate: the platform spec
+  calls for "transparent models before complex models" in Phase 3, with HMM/logistic/
+  gradient-boosted classifiers as explicit later work. Every numeric threshold the tree
+  consults lives in `config/regime.yaml`, not hard-coded.
+- **Confidence** is a distance-from-decision-boundary heuristic (also configured in
+  `config/regime.yaml`), not a probability - it says how solidly inside its
+  bucket/threshold the deciding score sits, nothing more.
+- **Duration / previous regime / transition probability**: derived from the persisted
+  `RegimeSnapshot` history (`jlmacro.models.regime.regime_status`,
+  `estimate_transition_matrix`) - the transition probabilities are a genuine empirical
+  Markov frequency count over that country's own regime history, not a guess, but they
+  only mean something once there's a reasonable amount of history to count over.
+
 ## Known limitations
 
 - Market-data providers (a real price vendor) and ECB/BoE/BoJ/World Bank/IMF macro
@@ -259,6 +318,11 @@ rather than inserted.
   portfolio/risk/attribution layers built in later phases.
 - `Portfolio`/`Position`/`Trade` tables exist (for schema/migration stability) but are
   not yet populated by any business logic.
+- The regime engine's decision tree, bucket thresholds and confidence heuristic are a
+  transparent v1 by design (see "Macro regime engine" above) - they have not been
+  back-tested against real historical regimes, only sanity-checked against synthetic
+  data. Treat regime labels/confidence as illustrative until validated against real
+  macro history.
 - `docker compose up` was validated via `docker compose config` (syntax/wiring) and by
   running every component (migrations, seeding, API, dashboard, full test suite)
   against an equivalent local PostgreSQL 16 instance; a Docker daemon was not available
@@ -268,9 +332,13 @@ rather than inserted.
   policy blocked all three hosts) - do one real run of each once you have internet
   access, before depending on them.
 
-## Recommended Phase 2 (remaining) / Phase 3
+## Recommended next work
 
-Remaining Phase 2 work: a real market-data provider (price vendor) behind
+Remaining Phase 2: a real market-data provider (price vendor) behind
 `BaseMarketDataProvider`, and optionally ECB/BoE/BoJ/World Bank/IMF macro adapters
-following the same pattern as FRED/RBA/ABS. Then Phase 3: the macro regime engine
-(growth/inflation/policy/financial-conditions scores) consuming this data.
+following the same pattern as FRED/RBA/ABS - the regime engine would immediately
+benefit from broader real (non-synthetic) coverage across the 6 countries.
+
+Phase 4 next: the quantitative signal engine (trend/valuation/positioning/catalyst
+scores and the composite investment score) that the platform spec has consuming the
+regime engine's output alongside its own inputs.
