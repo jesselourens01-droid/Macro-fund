@@ -27,7 +27,8 @@ full, specific list before relying on any of this for actual trading decisions.
   changes needed to adjust)
 - A synthetic data generator so the entire stack runs with **zero external API keys**
 - A read-only FastAPI service over the seeded data
-- A basic Streamlit research dashboard
+- An institutional Streamlit portfolio command centre with investor reporting,
+  market/regime monitoring, performance, risk, trade workflow and data-room exports
 - An append-only audit log
 - A test suite (pytest) covering config, models, data seeding and the API
 
@@ -317,6 +318,23 @@ docker compose exec api python scripts/generate_synthetic_data.py
 ```
 
 Then refresh the dashboard - it reads directly from the database.
+
+### Portfolio command centre
+
+Open http://localhost:8501 after startup. The dashboard now provides:
+
+- An executive overview for investor and investment-committee conversations: NAV,
+  return, volatility, drawdown, live exposure, global regimes and cross-asset market pulse
+- A consistent institutional visual system across market, macro, signal, portfolio,
+  risk, backtest, trade, performance and ML research workflows
+- Point-in-time data coverage, source-lineage and append-only audit controls
+- Downloadable standalone investor snapshots and ZIP data-room bundles containing
+  curated CSV datasets plus a machine-readable manifest
+- Explicit research/synthetic-data labelling and paper-execution status throughout
+
+The command centre is a decision-support and operating-control layer. It does not
+replace broker, custodian, fund-administrator or audited accounting records. See
+"Known limitations" before using outputs in a live-capital context.
 
 ## Manual / local development setup (no Docker)
 
