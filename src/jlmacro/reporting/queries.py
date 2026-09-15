@@ -90,7 +90,9 @@ def macro_data_history(session: Session, country: str, indicator_code: str) -> p
     )
 
 
-def regime_matrix(session: Session, countries: list[str]) -> pd.DataFrame:
+def regime_matrix(
+    session: Session, countries: list[str], *, as_of: dt.date | None = None
+) -> pd.DataFrame:
     """Latest regime snapshot for each of the given countries - one row per country,
     missing countries simply absent (rather than a row of nulls) so the caller decides
     how to render "no data yet".
@@ -100,9 +102,10 @@ def regime_matrix(session: Session, countries: list[str]) -> pd.DataFrame:
         stmt = (
             select(RegimeSnapshot)
             .where(RegimeSnapshot.country == country)
-            .order_by(RegimeSnapshot.as_of.desc())
-            .limit(1)
         )
+        if as_of is not None:
+            stmt = stmt.where(RegimeSnapshot.as_of <= as_of)
+        stmt = stmt.order_by(RegimeSnapshot.as_of.desc()).limit(1)
         snapshot = session.scalar(stmt)
         if snapshot is None:
             continue

@@ -1,18 +1,18 @@
-"""JL Global Macro Investment Platform - Phase 1 research dashboard.
+"""JL Global Macro institutional portfolio command centre.
 
-This is intentionally minimal: an instrument browser with a price chart and a macro
-indicator viewer that visualises the point-in-time revision history, plus a system
-status panel. The full 8-page CIO dashboard (NAV, risk, positions, attribution,
-investment journal, ...) described in the platform spec is built from Phase 9 onward,
-once there is a portfolio/risk/attribution layer to display.
+The Streamlit application is a presentation layer over the platform's point-in-time
+research, portfolio, risk, execution, audit and reporting services. Business logic
+remains in ``src/jlmacro`` so dashboard figures and exported datasets are reproducible.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import math
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pandas as pd
@@ -52,6 +52,13 @@ from jlmacro.portfolio.exposures import (
     compute_exposures,
 )
 from jlmacro.portfolio.sizing import compute_position_size
+from jlmacro.reporting.investor import (
+    build_data_room_export,
+    data_quality_snapshot,
+    market_pulse,
+    portfolio_operating_summary,
+    recent_audit_activity,
+)
 from jlmacro.reporting.queries import (
     list_instruments,
     macro_data_history,
@@ -76,25 +83,78 @@ from jlmacro.trades.lifecycle import (
 )
 from jlmacro.trades.memo import generate_investment_memo
 from jlmacro.trades.review import close_trade, generate_post_trade_review
+from ui import (
+    configure_plotly_theme,
+    inject_institutional_theme,
+    investor_report_html,
+    style_figure,
+)
 
-st.set_page_config(page_title="JL Global Macro Platform", layout="wide")
+st.set_page_config(
+    page_title="JL Global Macro | Portfolio Command Centre",
+    page_icon="◈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+inject_institutional_theme()
+configure_plotly_theme()
 
 settings = get_settings()
+platform_config = load_yaml_config("settings")
+fund_config = platform_config["fund"]
+today = dt.datetime.now(tz=dt.UTC).date()
 
-st.title("JL Global Macro Investment Platform")
-st.caption("Phase 1 - Research & data wiring dashboard. Live trading disabled by default.")
+st.sidebar.markdown("### Command centre")
+dashboard_as_of = st.sidebar.date_input("Reporting date", value=today, max_value=today)
+st.sidebar.caption(
+    f"Base currency · {fund_config['base_currency']}  \n"
+    f"Mandate · {fund_config['jurisdiction']}"
+)
+if settings.jlmacro_live_trading_enabled:
+    st.sidebar.error("Live trading is enabled")
+else:
+    st.sidebar.success("Paper execution · controls active")
+st.sidebar.divider()
+st.sidebar.caption(
+    "Data lineage: point-in-time market and macro observations with an append-only audit trail."
+)
+
+st.markdown(
+    f"""
+    <div class="jl-hero">
+      <div class="jl-eyebrow">Institutional research & portfolio intelligence</div>
+      <div class="jl-title">{fund_config['name']} — Portfolio Command Centre</div>
+      <div class="jl-subtitle">A unified view of performance, risk, macro regimes,
+      investment decisions and operating controls.</div>
+      <div class="jl-badge">RESEARCH ENVIRONMENT · PAPER EXECUTION</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 with session_scope() as session:
     status = system_status(session)
     instruments_df = list_instruments(session)
+    quality = data_quality_snapshot(session)
+    market_pulse_df = market_pulse(session, as_of=dashboard_as_of)
+    audit_df = recent_audit_activity(session)
+    overview_portfolios = list(session.scalars(select(Portfolio).order_by(Portfolio.name)))
+
+countries = load_yaml_config("macro_indicators").get("countries", [])
+with session_scope() as session:
+    overview_regimes_df = regime_matrix(session, countries, as_of=dashboard_as_of)
 
 status_cols = st.columns(5)
-status_cols[0].metric("Environment", settings.jlmacro_env)
-status_cols[1].metric("Instruments", status["instruments"])
-status_cols[2].metric("Market data rows", f"{status['market_data_points']:,}")
-status_cols[3].metric("Macro data rows", f"{status['macro_data_points']:,}")
+status_cols[0].metric("Environment", settings.jlmacro_env.title())
+status_cols[1].metric(
+    "Coverage",
+    f"{quality.price_coverage_pct:.0%}",
+    f"{quality.instruments_with_prices}/{quality.active_instruments} assets",
+)
+status_cols[2].metric("Market observations", f"{status['market_data_points']:,}")
+status_cols[3].metric("Macro observations", f"{status['macro_data_points']:,}")
 status_cols[4].metric(
-    "Live trading", "ENABLED" if settings.jlmacro_live_trading_enabled else "disabled"
+    "Execution", "LIVE" if settings.jlmacro_live_trading_enabled else "PAPER ONLY"
 )
 
 if instruments_df.empty:
@@ -105,6 +165,7 @@ if instruments_df.empty:
     st.stop()
 
 (
+    tab_overview,
     tab_prices,
     tab_macro,
     tab_regime,
@@ -118,19 +179,211 @@ if instruments_df.empty:
     tab_universe,
 ) = st.tabs(
     [
-        "Prices",
-        "Macro Indicators",
-        "Macro Regime",
+        "Overview",
+        "Markets",
+        "Macro",
+        "Regimes",
         "Signals",
-        "Portfolio",
-        "Risk",
-        "Backtest",
-        "Trade Journal",
+        "Portfolio Lab",
+        "Risk Lab",
+        "Backtests",
+        "Trade Book",
         "Performance",
-        "ML Research",
-        "Asset Universe",
+        "ML Lab",
+        "Data Room",
     ]
 )
+
+report_metrics: dict[str, str] = {
+    "Price coverage": f"{quality.price_coverage_pct:.0%}",
+    "Active instruments": f"{quality.active_instruments:,}",
+    "Market observations": f"{quality.market_rows:,}",
+    "Audit events": f"{quality.audit_events:,}",
+}
+
+with tab_overview:
+    st.markdown(
+        '<div class="jl-section">Executive portfolio overview</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Decision-ready performance, exposure, market and control information for investment "
+        "committee and investor conversations."
+    )
+
+    overview_summary: dict[str, object] | None = None
+    overview_nav = None
+    overview_hwm = None
+    overview_dd = None
+    if overview_portfolios:
+        portfolio_options = {portfolio.name: portfolio.id for portfolio in overview_portfolios}
+        selected_overview_name = st.selectbox(
+            "Portfolio",
+            list(portfolio_options),
+            key="overview_portfolio",
+            help="Select the portfolio used for executive performance and exposure metrics.",
+        )
+        selected_overview_id = portfolio_options[selected_overview_name]
+        inception = dt.date.fromisoformat(fund_config["inception_date"])
+        effective_start = min(inception, dashboard_as_of)
+        fee_policy = fees_config()
+        with session_scope() as session:
+            overview_summary = portfolio_operating_summary(session, selected_overview_id)
+            overview_nav = nav_history(
+                session,
+                selected_overview_id,
+                start=effective_start,
+                end=dashboard_as_of,
+                starting_capital=fee_policy["starting_capital"],
+            )
+        overview_hwm = high_water_mark_series(overview_nav)
+        overview_dd = drawdown_series(overview_nav)
+        nav_returns = overview_nav.pct_change().dropna()
+        nav_value = float(overview_nav.iloc[-1])
+        total_return = nav_value / float(overview_nav.iloc[0]) - 1.0
+        annualised_vol = (
+            float(nav_returns.std(ddof=1) * math.sqrt(252)) if len(nav_returns) > 1 else 0.0
+        )
+        max_drawdown = float(overview_dd.min())
+        live_trades = int(overview_summary["live_trades"])
+        gross_notional = float(overview_summary["gross_notional"])
+
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("Net asset value", f"{fund_config['base_currency']} {nav_value:,.0f}")
+        k2.metric("Total return", f"{total_return:+.2%}")
+        k3.metric("Annualised volatility", f"{annualised_vol:.2%}")
+        k4.metric("Maximum drawdown", f"{max_drawdown:.2%}")
+        k5.metric("Live positions", f"{live_trades}", f"{gross_notional:,.0f} gross")
+        report_metrics = {
+            "Net asset value": f"{fund_config['base_currency']} {nav_value:,.0f}",
+            "Total return": f"{total_return:+.2%}",
+            "Annualised volatility": f"{annualised_vol:.2%}",
+            "Maximum drawdown": f"{max_drawdown:.2%}",
+        }
+    else:
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric(
+            "Starting capital",
+            f"{fund_config['base_currency']} {fees_config()['starting_capital']:,.0f}",
+        )
+        k2.metric("Portfolios", "0", "Create one in Trade Book")
+        k3.metric("Price coverage", f"{quality.price_coverage_pct:.0%}")
+        k4.metric("Regime snapshots", f"{quality.regime_snapshots:,}")
+        st.info(
+            "Create a portfolio in the Trade Book to activate live NAV, drawdown, exposure and "
+            "attribution reporting. Market and macro research tools are already available."
+        )
+
+    chart_left, chart_right = st.columns([1.6, 1])
+    with chart_left:
+        if overview_nav is not None and overview_hwm is not None:
+            nav_fig = go.Figure()
+            nav_fig.add_trace(
+                go.Scatter(
+                    x=overview_nav.index,
+                    y=overview_nav.values,
+                    name="NAV",
+                    mode="lines",
+                    line={"width": 2.6, "color": "#3DD6C6"},
+                    fill="tozeroy",
+                    fillcolor="rgba(61,214,198,.08)",
+                )
+            )
+            nav_fig.add_trace(
+                go.Scatter(
+                    x=overview_hwm.index,
+                    y=overview_hwm.values,
+                    name="High-water mark",
+                    mode="lines",
+                    line={"width": 1.2, "dash": "dot", "color": "#94A8C1"},
+                )
+            )
+            style_figure(nav_fig, title="Portfolio value and capital preservation", height=390)
+            nav_fig.update_yaxes(tickprefix=f"{fund_config['base_currency']} ", tickformat=",")
+            st.plotly_chart(nav_fig, width="stretch")
+        elif not market_pulse_df.empty:
+            movers = market_pulse_df.dropna(subset=["return_20d"]).copy()
+            movers = movers.sort_values("return_20d").tail(12)
+            mover_fig = go.Figure(
+                go.Bar(
+                    x=movers["return_20d"],
+                    y=movers["symbol"],
+                    orientation="h",
+                    marker_color=[
+                        "#4ADE80" if value >= 0 else "#F87171"
+                        for value in movers["return_20d"]
+                    ],
+                    text=[f"{value:+.1%}" for value in movers["return_20d"]],
+                    textposition="outside",
+                )
+            )
+            style_figure(mover_fig, title="20-session market leadership", height=390)
+            mover_fig.update_xaxes(tickformat=".0%")
+            st.plotly_chart(mover_fig, width="stretch")
+
+    with chart_right:
+        if not overview_regimes_df.empty:
+            regime_view = overview_regimes_df[
+                ["country", "regime", "confidence", "as_of"]
+            ].copy()
+            regime_view["regime"] = regime_view["regime"].str.replace("_", " ").str.title()
+            st.markdown(
+                '<div class="jl-section">Global regime monitor</div>',
+                unsafe_allow_html=True,
+            )
+            st.dataframe(
+                regime_view.style.format({"confidence": "{:.0%}"}),
+                width="stretch",
+                hide_index=True,
+                height=350,
+            )
+        else:
+            st.info("Compute regime snapshots to activate the global regime monitor.")
+
+    st.markdown('<div class="jl-section">Cross-asset market pulse</div>', unsafe_allow_html=True)
+    if market_pulse_df.empty:
+        st.info("No market observations are available yet.")
+    else:
+        pulse_view = market_pulse_df.sort_values(
+            "return_20d", ascending=False, na_position="last"
+        ).head(12)
+        st.dataframe(
+            pulse_view[
+                [
+                    "symbol",
+                    "asset_class",
+                    "last",
+                    "change_1d",
+                    "return_20d",
+                    "realised_vol_20d",
+                    "as_of",
+                    "source",
+                ]
+            ].style.format(
+                {
+                    "last": "{:,.4f}",
+                    "change_1d": "{:+.2%}",
+                    "return_20d": "{:+.2%}",
+                    "realised_vol_20d": "{:.1%}",
+                },
+                na_rep="—",
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    control_cols = st.columns(4)
+    control_cols[0].metric("Price coverage", f"{quality.price_coverage_pct:.0%}")
+    control_cols[1].metric("Market sources", quality.market_sources)
+    control_cols[2].metric("Macro sources", quality.macro_sources)
+    control_cols[3].metric("Audit events", f"{quality.audit_events:,}")
+    st.markdown(
+        '<div class="jl-note"><strong>Control note:</strong> Outputs may include synthetic '
+        "prices and documented proxy factors. Live trading remains disabled. Validate real-data "
+        "licensing, reconciliation, custody and compliance workflows before presenting audited "
+        "performance or allocating capital.</div>",
+        unsafe_allow_html=True,
+    )
 
 with tab_prices:
     st.subheader("Instrument price history (synthetic)")
@@ -328,9 +581,8 @@ with tab_signals:
         "(weights and action thresholds from config/risk_limits.yaml). Positioning "
         "and Catalyst use documented proxies (RSI-based crowding; projected-cadence "
         "and self-referential surprise) pending real CFTC/options/consensus-calendar "
-        "data - see src/jlmacro/models/signals/ docstrings. **suggested_risk_units is "
-        "advisory only** - the risk engine (Phase 5+) has final authority over "
-        "position size."
+        "data - see the signal-model documentation. **Suggested risk units are advisory "
+        "only**; the risk engine retains final authority over position size."
     )
 
     @st.cache_data(ttl=300)
@@ -441,10 +693,9 @@ with tab_portfolio:
     st.subheader("Portfolio construction")
     st.caption(
         "Point-in-time covariance -> weighting (inverse-vol or equal-risk-contribution) "
-        "-> scaled to the fund's target volatility (config/risk_limits.yaml). This is a "
-        "proposal, not an executed position - there is no persisted Position/Trade table "
-        "yet (Phase 8), and none of config/risk_limits.yaml's concentration/drawdown "
-        "limits are enforced here (Phase 6's risk engine)."
+        "→ scaled to the mandate's target volatility. This is an allocation laboratory, "
+        "not an executed portfolio. Review the resulting risk, concentration and scenario "
+        "analytics before approving positions in the Trade Book."
     )
 
     col1, col2, col3 = st.columns(3)
@@ -501,10 +752,21 @@ with tab_portfolio:
             scaled = scale_to_target_volatility(raw_weights, cov, target_volatility=target_vol)
             contributions = risk_contributions(raw_weights, cov)
 
-            m1, m2, m3 = st.columns(3)
+            normalised_abs_weights = scaled.weights.abs() / scaled.weights.abs().sum()
+            effective_bets = 1.0 / float((normalised_abs_weights**2).sum())
+            weighted_asset_vol = float((normalised_abs_weights * vol).sum())
+            diversification_ratio = (
+                weighted_asset_vol / scaled.portfolio_volatility
+                if scaled.portfolio_volatility > 0
+                else 0.0
+            )
+
+            m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("Gross leverage", f"{scaled.gross_leverage:.2f}x")
             m2.metric("Portfolio volatility", f"{scaled.portfolio_volatility:.1%}")
             m3.metric("Instruments", len(portfolio_symbols))
+            m4.metric("Effective bets", f"{effective_bets:.1f}")
+            m5.metric("Diversification ratio", f"{diversification_ratio:.2f}x")
 
             weights_df = pd.DataFrame(
                 {
@@ -540,6 +802,29 @@ with tab_portfolio:
                 width="stretch",
             )
 
+            st.caption(
+                "Correlation matrix — identify hidden concentration before capital is allocated."
+            )
+            correlation = returns.corr()
+            correlation_fig = go.Figure(
+                go.Heatmap(
+                    z=correlation.values,
+                    x=correlation.columns,
+                    y=correlation.index,
+                    zmin=-1,
+                    zmax=1,
+                    colorscale=[
+                        [0.0, "#F87171"],
+                        [0.5, "#122A45"],
+                        [1.0, "#3DD6C6"],
+                    ],
+                    colorbar={"title": "ρ"},
+                    hovertemplate="%{x} / %{y}<br>Correlation %{z:.2f}<extra></extra>",
+                )
+            )
+            style_figure(correlation_fig, title="Cross-asset correlation", height=430)
+            st.plotly_chart(correlation_fig, width="stretch")
+
             st.divider()
             st.subheader("Exposure breakdown")
             with session_scope() as session:
@@ -574,9 +859,8 @@ with tab_portfolio:
     st.divider()
     st.subheader("Risk-based position sizing")
     st.caption(
-        "risk_budget = NAV x allowed_risk_percentage (config/risk_limits.yaml "
-        "position_risk, keyed by risk_units from the Phase 4 composite score's action "
-        "band); position size = risk_budget / ATR-based stop distance."
+        "Risk budget = NAV × allowed risk percentage, calibrated by conviction band; "
+        "position size = risk budget ÷ ATR-based stop distance."
     )
 
     scol1, scol2, scol3, scol4 = st.columns(4)
@@ -620,9 +904,9 @@ with tab_risk:
     st.subheader("Risk engine")
     st.caption(
         "VaR/Expected Shortfall, stress testing and the drawdown governor - the layer "
-        "with actual authority over risk. Uses the same instruments/weights selected "
-        "in the Portfolio tab above; nothing here is persisted or auto-enforced yet "
-        "(there is no Position/Trade table until Phase 8)."
+        "with authority over proposed risk. It uses the instruments and weights selected "
+        "in Portfolio Lab; scenario results remain analytical until positions are approved "
+        "through the controlled trade workflow."
     )
 
     if "scaled" not in globals() or len(portfolio_symbols) < 2:
@@ -655,6 +939,22 @@ with tab_risk:
         st.caption(
             f"{any_result.horizon_days}-day VaR/ES at {any_result.confidence:.0%} confidence"
         )
+
+        risk_limits = load_yaml_config("risk_limits")
+        soft_limit = float(risk_limits["soft_volatility_limit"])
+        hard_limit = float(risk_limits["hard_volatility_limit"])
+        limit_status = (
+            "BREACH"
+            if scaled.portfolio_volatility > hard_limit
+            else "WATCH"
+            if scaled.portfolio_volatility > soft_limit
+            else "WITHIN LIMIT"
+        )
+        utilisation = scaled.portfolio_volatility / hard_limit if hard_limit else 0.0
+        l1, l2, l3 = st.columns(3)
+        l1.metric("Volatility limit status", limit_status)
+        l2.metric("Hard-limit utilisation", f"{utilisation:.0%}")
+        l3.metric("Hard volatility limit", f"{hard_limit:.1%}")
 
         vcol1, vcol2 = st.columns(2)
         with vcol1:
@@ -717,8 +1017,8 @@ with tab_risk:
         st.caption(
             "config/risk_limits.yaml's drawdown_governor schedule: the fraction of the "
             "normal risk budget retained at a given drawdown from the fund's high-water "
-            "mark. There is no persisted NAV history yet (Phase 9), so this reads a "
-            "hypothetical current drawdown you set below."
+            "mark. Use the scenario control below to inspect the policy response before a "
+            "drawdown threshold is breached."
         )
         governor_config = drawdown_governor_config()
         current_drawdown = st.slider(
@@ -745,7 +1045,7 @@ with tab_risk:
 with tab_backtest:
     st.subheader("Backtest")
     st.caption(
-        "Replays the signal engine (Phase 4) and portfolio construction (Phase 5) "
+        "Replays the signal engine and portfolio construction process "
         "over history, one rebalance period at a time - each period's weights are "
         "decided using only data knowable before that period starts. Slow: one "
         "investment-score computation per symbol per rebalance date, so keep the "
@@ -1074,7 +1374,7 @@ with tab_journal:
 with tab_performance:
     st.subheader("Performance: NAV, drawdown, attribution")
     st.caption(
-        "Computed on demand from this portfolio's Trade rows (Phase 8) - never a "
+        "Computed on demand from this portfolio's controlled trade records - never a "
         "separately-maintained ledger. Realised P&L uses each trade's recorded exit "
         "price; unrealised P&L marks open trades to the latest point-in-time close."
     )
@@ -1159,7 +1459,7 @@ with tab_performance:
 with tab_ml:
     st.subheader("ML research layer")
     st.caption(
-        "Features are the Phase 4 composite score's own five components (already "
+        "Features are the composite score's five point-in-time components (already "
         "point-in-time correct); the label is the sign of the forward return over a "
         "chosen horizon. Walk-forward validated (chronological splits, never "
         "shuffled) against a majority-class baseline. Expensive - one investment-"
@@ -1267,8 +1567,145 @@ with tab_ml:
                 st.plotly_chart(fig, width="stretch")
 
 with tab_universe:
-    st.subheader("Configured asset universe")
+    st.subheader("Investor data room & operating controls")
     st.caption(
-        "Loaded from config/assets.yaml - edit that file to change the universe, no code changes needed."
+        "Curated exports, data lineage and audit evidence for investment committee, investor "
+        "due-diligence and downstream analysis."
     )
-    st.dataframe(instruments_df, width="stretch")
+
+    q1, q2, q3, q4, q5 = st.columns(5)
+    q1.metric("Active instruments", quality.active_instruments)
+    q2.metric("Price coverage", f"{quality.price_coverage_pct:.0%}")
+    q3.metric("Regime snapshots", f"{quality.regime_snapshots:,}")
+    q4.metric("Market sources", quality.market_sources)
+    q5.metric("Macro sources", quality.macro_sources)
+
+    latest_market_label = (
+        quality.latest_market_date.isoformat() if quality.latest_market_date else "—"
+    )
+    latest_macro_label = (
+        quality.latest_macro_date.isoformat() if quality.latest_macro_date else "—"
+    )
+    latest_ingestion_label = (
+        quality.latest_ingestion_at.isoformat(timespec="seconds")
+        if quality.latest_ingestion_at
+        else "—"
+    )
+    lineage = pd.DataFrame(
+        [
+            {
+                "dataset": "Market prices",
+                "rows": quality.market_rows,
+                "latest_effective_date": latest_market_label,
+                "coverage": f"{quality.price_coverage_pct:.0%}",
+                "control": "Point-in-time timestamps and source identifiers",
+            },
+            {
+                "dataset": "Macroeconomic observations",
+                "rows": quality.macro_rows,
+                "latest_effective_date": latest_macro_label,
+                "coverage": f"{quality.macro_sources} source(s)",
+                "control": "Release and revision vintages preserved",
+            },
+            {
+                "dataset": "Regime model output",
+                "rows": quality.regime_snapshots,
+                "latest_effective_date": (
+                    str(overview_regimes_df["as_of"].max())
+                    if not overview_regimes_df.empty
+                    else "—"
+                ),
+                "coverage": f"{len(overview_regimes_df)}/{len(countries)} countries",
+                "control": "Model version stored with every snapshot",
+            },
+            {
+                "dataset": "Audit trail",
+                "rows": quality.audit_events,
+                "latest_effective_date": latest_ingestion_label,
+                "coverage": "Append-only",
+                "control": "Actor, entity and event identifiers",
+            },
+        ]
+    )
+    st.dataframe(lineage, width="stretch", hide_index=True)
+
+    export_market = market_pulse_df.copy()
+    export_regimes = overview_regimes_df.copy()
+    generated_at = dt.datetime.now(tz=dt.UTC)
+    data_room_zip = build_data_room_export(
+        market=export_market,
+        regimes=export_regimes,
+        instruments=instruments_df,
+        audit=audit_df,
+        quality=quality,
+        generated_at=generated_at,
+    )
+
+    report_market = export_market[
+        ["symbol", "asset_class", "last", "change_1d", "return_20d", "as_of", "source"]
+    ].copy() if not export_market.empty else export_market
+    if not report_market.empty:
+        report_market["change_1d"] = report_market["change_1d"].map(
+            lambda value: f"{value:+.2%}" if pd.notna(value) else "—"
+        )
+        report_market["return_20d"] = report_market["return_20d"].map(
+            lambda value: f"{value:+.2%}" if pd.notna(value) else "—"
+        )
+        report_market["last"] = report_market["last"].map(lambda value: f"{value:,.4f}")
+
+    report_regimes = export_regimes[
+        ["country", "regime", "confidence", "as_of"]
+    ].copy() if not export_regimes.empty else export_regimes
+    if not report_regimes.empty:
+        report_regimes["regime"] = report_regimes["regime"].str.replace("_", " ").str.title()
+        report_regimes["confidence"] = report_regimes["confidence"].map(
+            lambda value: f"{value:.0%}"
+        )
+
+    report_html = investor_report_html(
+        fund_name=fund_config["name"],
+        as_of=dashboard_as_of,
+        metrics=report_metrics,
+        market=report_market,
+        regimes=report_regimes,
+    )
+
+    st.markdown('<div class="jl-section">Export centre</div>', unsafe_allow_html=True)
+    e1, e2, e3 = st.columns(3)
+    e1.download_button(
+        "Download investor snapshot",
+        data=report_html.encode("utf-8"),
+        file_name=f"jlmacro-investor-snapshot-{dashboard_as_of.isoformat()}.html",
+        mime="text/html",
+        use_container_width=True,
+    )
+    e2.download_button(
+        "Download diligence data room",
+        data=data_room_zip,
+        file_name=f"jlmacro-data-room-{dashboard_as_of.isoformat()}.zip",
+        mime="application/zip",
+        use_container_width=True,
+    )
+    e3.download_button(
+        "Download market pulse CSV",
+        data=export_market.to_csv(index=False).encode("utf-8"),
+        file_name=f"market-pulse-{dashboard_as_of.isoformat()}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+    with st.expander("Configured asset universe", expanded=True):
+        st.caption(
+            "Loaded from config/assets.yaml. Change the investment universe through configuration, "
+            "without changing application code."
+        )
+        st.dataframe(instruments_df, width="stretch", hide_index=True)
+
+    with st.expander("Market snapshot and source lineage"):
+        st.dataframe(export_market, width="stretch", hide_index=True)
+
+    with st.expander("Recent immutable audit trail"):
+        if audit_df.empty:
+            st.info("No audit events have been recorded yet.")
+        else:
+            st.dataframe(audit_df, width="stretch", hide_index=True)
